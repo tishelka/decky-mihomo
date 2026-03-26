@@ -171,7 +171,7 @@ class Plugin:
 
             active_group = self._resolve_active_group_name()
             if active_group:
-                await self._check_group_internal(active_group, auto_select=True)
+                await self._check_group_internal(active_group, auto_select=False)
                 await self._sync_from_controller()
 
             self.state["last_error"] = ""
@@ -193,7 +193,8 @@ class Plugin:
             raise ValueError("Нужна группа и нода.")
 
         started_temporarily = self.process is None
-        await self._ensure_core(tun_enabled=False)
+        desired_tun = self.process_mode == "tun"
+        await self._ensure_core(tun_enabled=desired_tun)
         await self._set_group_proxy(group_name, proxy_name)
         await self._sync_from_controller()
         self.state.setdefault("selected_proxies", {})[group_name] = proxy_name
@@ -211,7 +212,8 @@ class Plugin:
             raise ValueError("Выбери группу для проверки.")
 
         started_temporarily = self.process is None
-        await self._ensure_core(tun_enabled=False)
+        desired_tun = self.process_mode == "tun"
+        await self._ensure_core(tun_enabled=desired_tun)
         await self._sync_from_controller()
         await self._check_group_internal(group_name, auto_select=False)
         await self._sync_from_controller()
@@ -226,7 +228,8 @@ class Plugin:
             raise ValueError("Выбери группу.")
 
         started_temporarily = self.process is None
-        await self._ensure_core(tun_enabled=False)
+        desired_tun = self.process_mode == "tun"
+        await self._ensure_core(tun_enabled=desired_tun)
         await self._sync_from_controller()
         await self._check_group_internal(group_name, auto_select=True)
         await self._sync_from_controller()
@@ -246,7 +249,7 @@ class Plugin:
 
         active_group = self._resolve_active_group_name()
         if run_healthcheck and active_group:
-            await self._check_group_internal(active_group, auto_select=True)
+            await self._check_group_internal(active_group, auto_select=False)
             await self._sync_from_controller()
 
         self.state["last_refreshed_at"] = self._now_iso()
@@ -914,9 +917,11 @@ tun:
   stack: system
   auto-route: true
   auto-redirect: true
+  strict-route: true
   auto-detect-interface: true
   dns-hijack:
-    - 0.0.0.0:53
+    - any:53
+    - tcp://any:53
 """
         return f"{sanitized_source}{managed_block}\n"
 
