@@ -335,6 +335,7 @@ function Content() {
   }, []);
 
   const currentGroup = state.groups.find((group) => group.name === selectedGroup) || state.groups[0];
+  const currentGroupProxySignature = currentGroup?.proxies.join("\u0000") || "";
 
   useEffect(() => {
     if (!currentGroup) {
@@ -348,7 +349,7 @@ function Content() {
       }
       return currentGroup.current || currentGroup.proxies[0] || "";
     });
-  }, [currentGroup]);
+  }, [currentGroup?.name, currentGroup?.current, currentGroupProxySignature]);
 
   const currentHealth = currentGroup ? state.health[currentGroup.name] || {} : {};
   const recommendedProxy = currentGroup ? state.recommended_proxies[currentGroup.name] : "";
@@ -377,6 +378,19 @@ function Content() {
   const openSubscriptionEditor = () => {
     Navigation.Navigate(EDIT_ROUTE);
     Navigation.CloseSideMenus();
+  };
+
+  const handleProxySelection = (proxyName: string) => {
+    setSelectedProxy(proxyName);
+    if (!currentGroup || !proxyName || proxyName === currentGroup.current) {
+      return;
+    }
+
+    void runAction(
+      "apply-proxy",
+      "Нода выбрана",
+      () => selectProxy(currentGroup.name, proxyName),
+    );
   };
 
   return (
@@ -498,8 +512,8 @@ function Content() {
                 description="Список нод в выбранной группе. В подписи видна задержка после проверки."
                 rgOptions={proxyOptions}
                 selectedOption={selectedProxy}
-                disabled={!currentGroup || proxyOptions.length === 0}
-                onChange={(option) => setSelectedProxy(String(option.data))}
+                disabled={busyAction !== null || !currentGroup || proxyOptions.length === 0}
+                onChange={(option) => handleProxySelection(String(option.data))}
               />
             </PanelSectionRow>
 
