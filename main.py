@@ -976,12 +976,6 @@ class Plugin:
         source = self.profile_source_path.read_text(encoding="utf-8")
         sanitized_source = self._strip_top_level_keys(source, MANAGED_TOP_LEVEL_KEYS).rstrip()
         tun_flag = "true" if tun_enabled else "false"
-        default_interface = self._detect_default_interface()
-        include_interface_block = ""
-        if default_interface:
-            include_interface_block = f"""
-  include-interface:
-    - {default_interface}"""
         managed_block = f"""
 
 bind-address: '*'
@@ -997,13 +991,12 @@ tun:
   stack: system
   mtu: 1400
   auto-route: true
-  auto-redirect: true
+  auto-redirect: false
   auto-detect-interface: true
   dns-hijack:
     - any:53
     - tcp://any:53
   strict-route: true
-{include_interface_block}
 """
         return f"{sanitized_source}{managed_block}\n"
 
