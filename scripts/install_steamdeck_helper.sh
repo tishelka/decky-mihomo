@@ -97,11 +97,11 @@ chmod 0755 "${CONTROL_PATH}"
 chown root:root "${CONTROL_PATH}"
 
 cat >"${SUDOERS_PATH}" <<EOF
-${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} start
-${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} stop
-${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} restart
-${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} is-active
-${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} show
+ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} start
+ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} stop
+ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} restart
+ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} is-active
+ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} show
 EOF
 
 chmod 0440 "${SUDOERS_PATH}"
