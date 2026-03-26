@@ -78,6 +78,7 @@ class Plugin:
         self.mihomo_log_path = self.log_dir / "mihomo.log"
         self.diagnostics_path = self.log_dir / "diagnostics.txt"
         self.tun_helper_script_path = self.plugin_dir / "scripts" / "install_steamdeck_helper.sh"
+        self.service_control_path = Path("/usr/local/bin") / f"{self.plugin_slug}-servicectl"
         self.service_name = f"{self.plugin_slug}.service"
         self.service_unit_path = Path("/etc/systemd/system") / self.service_name
         self.sudoers_path = Path("/etc/sudoers.d") / self.plugin_slug
@@ -417,6 +418,8 @@ class Plugin:
         return shutil.which("systemctl")
 
     def _service_control_command(self, action: str) -> list[str]:
+        if self.service_control_path.exists():
+            return [str(self.service_control_path), action]
         systemctl_path = self._systemctl_path()
         if not systemctl_path:
             raise RuntimeError("systemctl не найден в системе SteamOS.")
@@ -481,7 +484,11 @@ class Plugin:
             self.process_mode = None
 
     def _is_helper_installed(self) -> bool:
-        if not self.service_unit_path.exists() or not self.sudoers_path.exists():
+        if (
+            not self.service_unit_path.exists()
+            or not self.sudoers_path.exists()
+            or not self.service_control_path.exists()
+        ):
             return False
         systemctl_path = self._systemctl_path()
         if not systemctl_path:

@@ -26,6 +26,7 @@ CONFIG_PATH="${STABLE_SETTINGS_DIR}/mihomo-managed.yaml"
 LOG_PATH="${LOG_DIR}/mihomo.log"
 SERVICE_NAME="${PLUGIN_SLUG}.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+CONTROL_PATH="/usr/local/bin/${PLUGIN_SLUG}-servicectl"
 SUDOERS_PATH="/etc/sudoers.d/${PLUGIN_SLUG}"
 SYSTEMCTL_PATH="$(command -v systemctl)"
 VISUDO_PATH="$(command -v visudo || true)"
@@ -71,12 +72,33 @@ StandardError=append:${LOG_PATH}
 WantedBy=multi-user.target
 EOF
 
+cat >"${CONTROL_PATH}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+SYSTEMCTL_PATH="${SYSTEMCTL_PATH}"
+SERVICE_NAME="${SERVICE_NAME}"
+ACTION="\${1:-}"
+
+case "\${ACTION}" in
+  start|stop|restart|is-active|show)
+    exec "\${SYSTEMCTL_PATH}" "\${ACTION}" "\${SERVICE_NAME}"
+    ;;
+  *)
+    echo "Usage: \${0} {start|stop|restart|is-active|show}" >&2
+    exit 2
+    ;;
+esac
+EOF
+
+chmod 0755 "${CONTROL_PATH}"
+
 cat >"${SUDOERS_PATH}" <<EOF
-${DECK_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} start ${SERVICE_NAME}
-${DECK_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} stop ${SERVICE_NAME}
-${DECK_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} restart ${SERVICE_NAME}
-${DECK_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} is-active ${SERVICE_NAME}
-${DECK_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} show ${SERVICE_NAME}
+${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} start
+${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} stop
+${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} restart
+${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} is-active
+${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} show
 EOF
 
 chmod 0440 "${SUDOERS_PATH}"
@@ -97,11 +119,12 @@ Binary path: ${BINARY_PATH}
 Config path: ${CONFIG_PATH}
 Service: ${SERVICE_NAME}
 Unit: ${SERVICE_PATH}
+Control helper: ${CONTROL_PATH}
 Sudoers: ${SUDOERS_PATH}
 
 Next steps:
 1. Return to Game Mode or restart Steam / Decky Loader.
 2. Open Decky Mihomo.
 3. Add or refresh the subscription if needed.
-4. Press "Подключить VPN".
+4. Press "?????????? VPN".
 EOF
