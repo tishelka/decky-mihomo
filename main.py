@@ -4,10 +4,12 @@ import asyncio
 import base64
 import gzip
 import json
+import re
 import secrets
 import shutil
 import ssl
 import stat
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -70,6 +72,7 @@ class Plugin:
         self.runtime_bin_dir = self.runtime_dir / "bin"
         self.runtime_mihomo_path = self.runtime_bin_dir / "mihomo"
         self.mihomo_log_path = self.log_dir / "mihomo.log"
+        self.diagnostics_path = self.log_dir / "diagnostics.txt"
         self._ensure_directories()
         self.state = self._load_state()
         self.state["last_error"] = ""
@@ -116,6 +119,10 @@ class Plugin:
         payload["has_profile"] = self.profile_source_path.exists()
         payload["binary_ready"] = self._resolve_existing_mihomo() is not None
         return payload
+
+    async def get_diagnostics(self) -> dict[str, Any]:
+        await self.get_state()
+        return await asyncio.to_thread(self._collect_diagnostics)
 
     async def apply_subscription_url(self, url: str) -> dict[str, Any]:
         normalized = url.strip()
@@ -1082,6 +1089,184 @@ tun:
             return "Лог ещё не создан."
         lines = self.mihomo_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         return "\n".join(lines[-limit:]).strip() or "Лог пуст."
+
+    def _collect_diagnostics(self) -> dict[str, Any]:
+        active_group = self.state.get("active_group") or ""
+        active_proxy = ""
+        group = self._get_group(active_group) if active_group else None
+        if group:
+            active_proxy = (
+                group.get("current")
+                or (self.state.get("selected_proxies") or {}).get(active_group, "")
+            )
+
+        binary_path = self._resolve_existing_mihomo()
+        source_profile = self._read_text_file(self.profile_source_path, max_chars=18000)
+        managed_config = self._read_text_file(self.managed_config_path, max_chars=18000)
+        mihomo_log = self._tail_file(self.mihomo_log_path, limit=160, max_chars=18000)
+        network_snapshot = self._collect_network_snapshot()
+
+        payload = {
+            "generated_at": self._now_iso(),
+            "plugin_version": self.plugin_version,
+            "core_mode": self.process_mode or "stopped",
+            "connected": self.process_mode == "tun",
+            "controller_ready": self.process is not None and self.process.returncode is None,
+            "process_returncode": self.process.returncode if self.process is not None else None,
+            "mihomo_version": self.state.get("mihomo_version") or "",
+            "binary_path": str(binary_path) if binary_path is not None else "",
+            "binary_asset_name": str(self.state.get("runtime_mihomo_asset_name") or ""),
+            "runtime_binary_plugin_version": str(self.state.get("runtime_mihomo_plugin_version") or ""),
+            "default_interface": self._detect_default_interface() or "",
+            "active_group": active_group,
+            "active_proxy": active_proxy,
+            "last_error": str(self.state.get("last_error") or ""),
+            "last_notice": str(self.state.get("last_notice") or ""),
+            "diagnostics_path": str(self.diagnostics_path),
+            "source_profile": self._mask_sensitive_text(source_profile),
+            "managed_config": self._mask_sensitive_text(managed_config),
+            "mihomo_log": self._mask_sensitive_text(mihomo_log),
+            "network_snapshot": self._mask_sensitive_text(network_snapshot),
+        }
+        payload["summary"] = self._build_diagnostics_summary(payload)
+        self.diagnostics_path.write_text(
+            self._render_diagnostics_report(payload),
+            encoding="utf-8",
+        )
+        return payload
+
+    def _build_diagnostics_summary(self, payload: dict[str, Any]) -> str:
+        summary_lines = [
+            f"Создано: {payload['generated_at']}",
+            f"Версия плагина: {payload['plugin_version']}",
+            f"Режим ядра: {payload['core_mode']}",
+            f"Controller готов: {'да' if payload['controller_ready'] else 'нет'}",
+            f"Mihomo: {payload['mihomo_version'] or 'неизвестно'}",
+            f"Бинарь: {payload['binary_path'] or 'не найден'}",
+            f"Asset: {payload['binary_asset_name'] or 'неизвестно'}",
+            f"Версия cached core: {payload['runtime_binary_plugin_version'] or 'неизвестно'}",
+            f"Интерфейс по умолчанию: {payload['default_interface'] or 'не определён'}",
+            f"Активная группа: {payload['active_group'] or 'нет'}",
+            f"Активная нода: {payload['active_proxy'] or 'нет'}",
+        ]
+        if payload["last_error"]:
+            summary_lines.extend(["", "Последняя ошибка:", payload["last_error"]])
+        if payload["last_notice"]:
+            summary_lines.extend(["", "Последнее предупреждение:", payload["last_notice"]])
+        return "\n".join(summary_lines).strip()
+
+    def _render_diagnostics_report(self, payload: dict[str, Any]) -> str:
+        sections = [
+            ("Сводка", payload["summary"]),
+            ("Managed config", payload["managed_config"]),
+            ("Исходный профиль", payload["source_profile"]),
+            ("Mihomo log", payload["mihomo_log"]),
+            ("Сетевой снимок", payload["network_snapshot"]),
+        ]
+        rendered = []
+        for title, body in sections:
+            rendered.append(f"=== {title} ===\n{body or 'Пусто.'}")
+        return "\n\n".join(rendered).strip() + "\n"
+
+    def _read_text_file(self, path: Path, max_chars: int = 12000) -> str:
+        if not path.exists():
+            return f"Файл не найден: {path}"
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return f"Не удалось прочитать {path}: {exc}"
+        return self._truncate_text(text, max_chars=max_chars)
+
+    def _tail_file(self, path: Path, limit: int = 120, max_chars: int = 12000) -> str:
+        if not path.exists():
+            return f"Файл не найден: {path}"
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            return f"Не удалось прочитать {path}: {exc}"
+        text = "\n".join(lines[-limit:]).strip() or "Лог пуст."
+        return self._truncate_text(text, max_chars=max_chars)
+
+    def _truncate_text(self, text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        omitted = len(text) - max_chars
+        return f"{text[:max_chars]}\n\n...[truncated {omitted} chars]..."
+
+    def _collect_network_snapshot(self) -> str:
+        sections: list[str] = []
+        commands = [
+            ("ip rule show", ["ip", "rule", "show"]),
+            ("ip route show table main", ["ip", "route", "show", "table", "main"]),
+            ("ip route show table 2022", ["ip", "route", "show", "table", "2022"]),
+            ("ip addr show", ["ip", "addr", "show"]),
+            ("nft list ruleset", ["nft", "list", "ruleset"]),
+        ]
+        for title, command in commands:
+            sections.append(f"$ {title}\n{self._run_diagnostic_command(command)}")
+
+        resolv_conf = self._read_text_file(Path("/etc/resolv.conf"), max_chars=4000)
+        sections.append(f"$ cat /etc/resolv.conf\n{resolv_conf}")
+        return "\n\n".join(sections).strip()
+
+    def _run_diagnostic_command(self, command: list[str], timeout: int = 8) -> str:
+        executable = shutil.which(command[0])
+        if not executable:
+            return f"Команда недоступна: {command[0]}"
+        try:
+            completed = subprocess.run(
+                [executable, *command[1:]],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return "Команда завершилась по таймауту."
+        except OSError as exc:
+            return f"Не удалось выполнить команду: {exc}"
+
+        stdout = completed.stdout.strip()
+        stderr = completed.stderr.strip()
+        chunks = []
+        if stdout:
+            chunks.append(stdout)
+        if stderr:
+            chunks.append(f"[stderr]\n{stderr}")
+        if not chunks:
+            chunks.append("(пустой вывод)")
+        rendered = "\n\n".join(chunks)
+        rendered = self._truncate_text(rendered, max_chars=16000)
+        if completed.returncode != 0:
+            rendered += f"\n\n[exit code: {completed.returncode}]"
+        return rendered
+
+    def _mask_sensitive_text(self, text: str) -> str:
+        if not text:
+            return text
+
+        redacted = text
+        if self.controller_secret:
+            redacted = redacted.replace(self.controller_secret, "<redacted-controller-secret>")
+
+        subscription_url = str(self.state.get("subscription_url") or "").strip()
+        if subscription_url:
+            redacted = redacted.replace(subscription_url, "<redacted-subscription-url>")
+
+        redacted = re.sub(
+            r"^(\s*(?:uuid|password|secret|token|short-id|private-key|client-secret)\s*:\s*).*$",
+            r"\1<redacted>",
+            redacted,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        redacted = re.sub(
+            r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+            "<redacted-uuid>",
+            redacted,
+        )
+        return redacted
 
     def _is_group(self, proxy_data: dict[str, Any]) -> bool:
         proxy_type = proxy_data.get("type")

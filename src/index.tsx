@@ -16,6 +16,7 @@ import {
 } from "@decky/api";
 import { type CSSProperties, useEffect, useState } from "react";
 import {
+  FaBug,
   FaBolt,
   FaEdit,
   FaGlobeEurope,
@@ -53,9 +54,35 @@ type PluginState = {
   binary_ready: boolean;
 };
 
+type DiagnosticsData = {
+  generated_at: string;
+  plugin_version: string;
+  core_mode: "controller" | "tun" | "stopped" | string;
+  connected: boolean;
+  controller_ready: boolean;
+  process_returncode: number | null;
+  mihomo_version: string;
+  binary_path: string;
+  binary_asset_name: string;
+  runtime_binary_plugin_version: string;
+  default_interface: string;
+  active_group: string;
+  active_proxy: string;
+  last_error: string;
+  last_notice: string;
+  diagnostics_path: string;
+  summary: string;
+  source_profile: string;
+  managed_config: string;
+  mihomo_log: string;
+  network_snapshot: string;
+};
+
 const EDIT_ROUTE = "/decky-mihomo/subscription";
+const DIAGNOSTICS_ROUTE = "/decky-mihomo/diagnostics";
 
 const getState = callable<[], PluginState>("get_state");
+const getDiagnostics = callable<[], DiagnosticsData>("get_diagnostics");
 const applySubscriptionUrl = callable<[url: string], PluginState>("apply_subscription_url");
 const refreshSubscription = callable<[], PluginState>("refresh_subscription");
 const connectVpn = callable<[], PluginState>("connect");
@@ -108,6 +135,23 @@ const statusPillBase: CSSProperties = {
   padding: "8px 12px",
   fontSize: 12,
   fontWeight: 700,
+};
+
+const diagnosticsBlockStyle: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: 12,
+  borderRadius: 12,
+  border: "1px solid rgba(120, 156, 219, 0.18)",
+  background: "rgba(9, 14, 24, 0.72)",
+  color: "#dbe7ff",
+  fontSize: 11,
+  lineHeight: 1.45,
+  fontFamily: "monospace",
+  whiteSpace: "pre-wrap",
+  overflowX: "auto",
+  overflowY: "auto",
+  maxHeight: 280,
 };
 
 function statusLabel(state: PluginState): string {
@@ -283,6 +327,99 @@ function SubscriptionEditorPage() {
   );
 }
 
+function DiagnosticsBlock(props: { title: string; text: string }) {
+  return (
+    <PanelSectionRow>
+      <div style={{ width: "100%", display: "grid", gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>{props.title}</div>
+        <div style={diagnosticsBlockStyle}>{props.text || "Пусто."}</div>
+      </div>
+    </PanelSectionRow>
+  );
+}
+
+function DiagnosticsPage() {
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [data, setData] = useState<DiagnosticsData | null>(null);
+
+  const refreshDiagnostics = async () => {
+    setBusy(true);
+    try {
+      const nextData = await getDiagnostics();
+      setData(nextData);
+      setLoaded(true);
+    } catch (error) {
+      toaster.toast({
+        title: "Не удалось собрать диагностику",
+        body: error instanceof Error ? error.message : String(error),
+      });
+      setLoaded(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshDiagnostics();
+  }, []);
+
+  return (
+    <>
+      <PanelSection title="Диагностика">
+        <PanelSectionRow>
+          <Field
+            label="Что здесь есть"
+            description="Этот экран собирает лог Mihomo, текущий managed config и сетевой снимок Steam Deck. После этого можно прислать мне скриншоты или текст проблемного блока."
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Файл диагностики"
+            description={data?.diagnostics_path || "Будет создан после обновления диагностики"}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busy}
+            onClick={() => void refreshDiagnostics()}
+          >
+            Обновить диагностику
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busy}
+            onClick={() => Navigation.NavigateBack()}
+          >
+            Вернуться назад
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
+      {loaded && data && (
+        <>
+          <PanelSection title="Сводка">
+            <DiagnosticsBlock title="Краткая сводка для отправки" text={data.summary} />
+          </PanelSection>
+
+          <PanelSection title="Лог и конфиг">
+            <DiagnosticsBlock title="Mihomo log" text={data.mihomo_log} />
+            <DiagnosticsBlock title="Managed config" text={data.managed_config} />
+            <DiagnosticsBlock title="Исходный профиль" text={data.source_profile} />
+          </PanelSection>
+
+          <PanelSection title="Сеть">
+            <DiagnosticsBlock title="Сетевой снимок" text={data.network_snapshot} />
+          </PanelSection>
+        </>
+      )}
+    </>
+  );
+}
+
 function Content() {
   const [state, setState] = useState<PluginState>(EMPTY_STATE);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -377,6 +514,11 @@ function Content() {
 
   const openSubscriptionEditor = () => {
     Navigation.Navigate(EDIT_ROUTE);
+    Navigation.CloseSideMenus();
+  };
+
+  const openDiagnostics = () => {
+    Navigation.Navigate(DIAGNOSTICS_ROUTE);
     Navigation.CloseSideMenus();
   };
 
@@ -490,6 +632,25 @@ function Content() {
             <FaPowerOff style={{ marginRight: 8 }} />
             Отключить VPN
           </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Диагностика">
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busyAction !== null}
+            onClick={openDiagnostics}
+          >
+            <FaBug style={{ marginRight: 8 }} />
+            Открыть экран диагностики
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Когда использовать"
+            description="Если VPN подключается, но сайты всё равно не открываются, открой этот экран и пришли мне сводку, лог Mihomo и сетевой снимок."
+          />
         </PanelSectionRow>
       </PanelSection>
 
@@ -625,6 +786,9 @@ export default definePlugin(() => {
   routerHook.addRoute(EDIT_ROUTE, SubscriptionEditorPage, {
     exact: true,
   });
+  routerHook.addRoute(DIAGNOSTICS_ROUTE, DiagnosticsPage, {
+    exact: true,
+  });
 
   return {
     name: "Decky Mihomo",
@@ -633,6 +797,7 @@ export default definePlugin(() => {
     icon: <FaGlobeEurope />,
     onDismount() {
       routerHook.removeRoute(EDIT_ROUTE);
+      routerHook.removeRoute(DIAGNOSTICS_ROUTE);
       console.log("Decky Mihomo unloaded");
     },
   };
