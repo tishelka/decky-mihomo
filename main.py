@@ -107,15 +107,33 @@ class Plugin:
 
         try:
             raw_profile = await asyncio.to_thread(self._download_text, subscription_url)
-            await asyncio.to_thread(self.profile_source_path.write_text, raw_profile, "utf-8")
-            self.state["last_profile_source"] = "subscription"
-            self.state["last_error"] = ""
-            self._save_state()
-            return await self._reload_profile(run_healthcheck=True)
         except Exception as exc:
             self.state["last_error"] = str(exc)
             self._save_state()
             raise
+
+        await asyncio.to_thread(self.profile_source_path.write_text, raw_profile, "utf-8")
+        self.state["last_profile_source"] = "subscription"
+        self.state["last_refreshed_at"] = self._now_iso()
+        self.state["last_error"] = ""
+        self._save_state()
+
+        should_reload_now = self.process is not None or self._resolve_existing_mihomo() is not None
+        if not should_reload_now:
+            self._clear_runtime_state()
+            self._save_state()
+            return await self.get_state()
+
+        try:
+            return await self._reload_profile(run_healthcheck=True)
+        except Exception as exc:
+            self._clear_runtime_state()
+            self.state["last_error"] = (
+                "Подписка сохранена, но mihomo пока не удалось перезапустить. "
+                f"Попробуй нажать 'Подключить VPN' отдельно.\n\n{exc}"
+            )
+            self._save_state()
+            return await self.get_state()
 
     async def import_profile_text(self, yaml_text: str) -> dict[str, Any]:
         profile_text = yaml_text.strip()
@@ -796,6 +814,13 @@ tun:
             "selected_proxies": {},
             "mihomo_version": "",
         }
+
+    def _clear_runtime_state(self) -> None:
+        self.state["active_group"] = ""
+        self.state["groups"] = []
+        self.state["health"] = {}
+        self.state["recommended_proxies"] = {}
+        self.state["selected_proxies"] = {}
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_path.exists():

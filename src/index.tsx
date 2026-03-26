@@ -208,9 +208,13 @@ function SubscriptionEditorPage() {
     try {
       const nextState = await applySubscriptionUrl(draft.trim());
       setSavedValue(nextState.subscription_url || draft.trim());
+      setDraft(nextState.subscription_url || draft.trim());
       toaster.toast({
-        title: "Подписка сохранена",
-        body: "Профиль обновлен, можно возвращаться в плагин.",
+        title: nextState.last_error
+          ? "Подписка сохранена с предупреждением"
+          : "Подписка сохранена",
+        body: nextState.last_error
+          || "Ссылка и YAML-профиль сохранены, можно возвращаться в плагин.",
       });
       Navigation.NavigateBack();
     } catch (error) {
