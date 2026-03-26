@@ -1,6 +1,10 @@
 import {
+  ButtonItem,
+  DropdownItem,
+  Field,
   PanelSection,
   PanelSectionRow,
+  TextField,
   staticClasses,
 } from "@decky/ui";
 import {
@@ -12,7 +16,6 @@ import { type CSSProperties, useEffect, useState } from "react";
 import {
   FaBolt,
   FaGlobeEurope,
-  FaLink,
   FaPlug,
   FaPowerOff,
   FaSyncAlt,
@@ -49,7 +52,6 @@ type PluginState = {
 const getState = callable<[], PluginState>("get_state");
 const applySubscriptionUrl = callable<[url: string], PluginState>("apply_subscription_url");
 const refreshSubscription = callable<[], PluginState>("refresh_subscription");
-const importProfileText = callable<[yamlText: string], PluginState>("import_profile_text");
 const connectVpn = callable<[], PluginState>("connect");
 const disconnectVpn = callable<[], PluginState>("disconnect");
 const selectProxy = callable<[groupName: string, proxyName: string], PluginState>("select_proxy");
@@ -74,75 +76,21 @@ const EMPTY_STATE: PluginState = {
   binary_ready: false,
 };
 
-const cardStyle: CSSProperties = {
-  background: "linear-gradient(160deg, rgba(16,24,40,0.95), rgba(12,18,31,0.88))",
-  border: "1px solid rgba(120, 156, 219, 0.2)",
-  borderRadius: 16,
-  padding: 16,
+const heroStyle: CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
-};
-
-const heroStyle: CSSProperties = {
-  ...cardStyle,
+  padding: 16,
+  borderRadius: 16,
+  background: "linear-gradient(160deg, rgba(16,24,40,0.95), rgba(12,18,31,0.88))",
+  border: "1px solid rgba(120, 156, 219, 0.2)",
   display: "grid",
   gap: 12,
 };
 
-const inputStyle: CSSProperties = {
-  width: "100%",
-  boxSizing: "border-box",
-  padding: "12px 14px",
-  borderRadius: 12,
-  border: "1px solid rgba(148, 163, 184, 0.28)",
-  background: "rgba(10, 15, 28, 0.9)",
-  color: "white",
-  fontSize: 14,
-};
-
-const textareaStyle: CSSProperties = {
-  ...inputStyle,
-  minHeight: 140,
-  resize: "vertical",
-};
-
-const selectStyle: CSSProperties = {
-  ...inputStyle,
-  appearance: "none",
-};
-
-const actionRowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 10,
-};
-
-const metaTextStyle: CSSProperties = {
+const heroMetaStyle: CSSProperties = {
   color: "rgba(195, 205, 225, 0.74)",
   fontSize: 12,
   lineHeight: 1.45,
-};
-
-const proxyRowStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr auto",
-  gap: 12,
-  alignItems: "center",
-  padding: 12,
-  borderRadius: 14,
-  background: "rgba(11, 18, 31, 0.9)",
-  border: "1px solid rgba(148, 163, 184, 0.16)",
-};
-
-const smallButtonStyle: CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 999,
-  border: "1px solid rgba(96, 165, 250, 0.28)",
-  background: "linear-gradient(180deg, rgba(17,24,39,1), rgba(12,18,30,1))",
-  color: "white",
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
 };
 
 const statusPillBase: CSSProperties = {
@@ -195,7 +143,7 @@ function statusStyle(state: PluginState): CSSProperties {
 
 function formatTimestamp(value: string): string {
   if (!value) {
-    return "ещё не обновлялось";
+    return "еще не обновлялось";
   }
 
   const parsed = new Date(value);
@@ -216,27 +164,19 @@ function formatDelay(delay: number | null | undefined): string {
   return `${delay} мс`;
 }
 
-function actionButtonStyle(active: boolean): CSSProperties {
-  return {
-    ...smallButtonStyle,
-    opacity: active ? 0.6 : 1,
-    cursor: active ? "default" : "pointer",
-  };
-}
-
 function Content() {
   const [state, setState] = useState<PluginState>(EMPTY_STATE);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [urlDraft, setUrlDraft] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("");
-  const [yamlDraft, setYamlDraft] = useState("");
+  const [selectedProxy, setSelectedProxy] = useState("");
   const [draftInitialized, setDraftInitialized] = useState(false);
 
   const applyFreshState = (nextState: PluginState, syncDraft = false) => {
     setState(nextState);
     setSelectedGroup((current) => {
-      const known = nextState.groups.some((group) => group.name === current);
-      if (known) {
+      const exists = nextState.groups.some((group) => group.name === current);
+      if (exists) {
         return current;
       }
       return nextState.active_group || nextState.groups[0]?.name || "";
@@ -281,12 +221,45 @@ function Content() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const currentGroup =
-    state.groups.find((group) => group.name === selectedGroup) || state.groups[0];
+  const currentGroup = state.groups.find((group) => group.name === selectedGroup) || state.groups[0];
+
+  useEffect(() => {
+    if (!currentGroup) {
+      setSelectedProxy("");
+      return;
+    }
+
+    setSelectedProxy((current) => {
+      if (currentGroup.proxies.includes(current)) {
+        return current;
+      }
+      return currentGroup.current || currentGroup.proxies[0] || "";
+    });
+  }, [currentGroup]);
+
   const currentHealth = currentGroup ? state.health[currentGroup.name] || {} : {};
-  const recommendedProxy = currentGroup
-    ? state.recommended_proxies[currentGroup.name]
-    : undefined;
+  const recommendedProxy = currentGroup ? state.recommended_proxies[currentGroup.name] : "";
+  const currentDelay = currentGroup?.current ? currentHealth[currentGroup.current] : undefined;
+
+  const groupOptions = state.groups.map((group) => ({
+    data: group.name,
+    label: group.name,
+  }));
+
+  const proxyOptions = (currentGroup?.proxies || []).map((proxyName) => {
+    const delay = currentHealth[proxyName];
+    const suffix =
+      proxyName === currentGroup?.current
+        ? " • активна"
+        : proxyName === recommendedProxy
+          ? " • лучшая"
+          : "";
+
+    return {
+      data: proxyName,
+      label: `${proxyName} • ${formatDelay(delay)}${suffix}`,
+    };
+  });
 
   return (
     <>
@@ -298,7 +271,7 @@ function Content() {
                 <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: 0.2 }}>
                   Decky Mihomo
                 </div>
-                <div style={metaTextStyle}>
+                <div style={heroMetaStyle}>
                   Подписка, проверка нод и переключение локаций прямо в игровом режиме.
                 </div>
               </div>
@@ -310,51 +283,26 @@ function Content() {
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 18 }}>
               <div>
-                <div style={{ ...metaTextStyle, marginBottom: 4 }}>Режим ядра</div>
-                <div>{state.core_mode === "tun" ? "TUN VPN" : state.controller_ready ? "Controller only" : "Остановлено"}</div>
+                <div style={{ ...heroMetaStyle, marginBottom: 4 }}>Режим ядра</div>
+                <div>
+                  {state.core_mode === "tun"
+                    ? "TUN VPN"
+                    : state.controller_ready
+                      ? "Controller only"
+                      : "Остановлено"}
+                </div>
               </div>
               <div>
-                <div style={{ ...metaTextStyle, marginBottom: 4 }}>Mihomo</div>
-                <div>{state.mihomo_version || (state.binary_ready ? "готов к запуску" : "скачается при первом запуске")}</div>
+                <div style={{ ...heroMetaStyle, marginBottom: 4 }}>Mihomo</div>
+                <div>
+                  {state.mihomo_version
+                    || (state.binary_ready ? "готов к запуску" : "скачается при первом запуске")}
+                </div>
               </div>
               <div>
-                <div style={{ ...metaTextStyle, marginBottom: 4 }}>Последнее обновление</div>
+                <div style={{ ...heroMetaStyle, marginBottom: 4 }}>Последнее обновление</div>
                 <div>{formatTimestamp(state.last_refreshed_at)}</div>
               </div>
-            </div>
-
-            <div style={actionRowStyle}>
-              <button
-                style={actionButtonStyle(busyAction !== null)}
-                disabled={busyAction !== null || !state.has_profile}
-                onClick={() => void runAction("connect", "VPN подключен", () => connectVpn())}
-              >
-                <FaPlug style={{ marginRight: 8 }} />
-                Подключить
-              </button>
-              <button
-                style={actionButtonStyle(busyAction !== null)}
-                disabled={busyAction !== null || !state.connected}
-                onClick={() => void runAction("disconnect", "VPN отключен", () => disconnectVpn())}
-              >
-                <FaPowerOff style={{ marginRight: 8 }} />
-                Отключить
-              </button>
-              <button
-                style={actionButtonStyle(busyAction !== null)}
-                disabled={busyAction !== null || !currentGroup}
-                onClick={() =>
-                  currentGroup &&
-                  void runAction(
-                    "best",
-                    "Выбрана лучшая доступная нода",
-                    () => chooseBestProxy(currentGroup.name),
-                  )
-                }
-              >
-                <FaBolt style={{ marginRight: 8 }} />
-                Найти лучшую
-              </button>
             </div>
           </div>
         </PanelSectionRow>
@@ -362,192 +310,180 @@ function Content() {
 
       <PanelSection title="Подписка">
         <PanelSectionRow>
-          <div style={cardStyle}>
-            <div style={{ ...metaTextStyle, marginBottom: 8 }}>
-              Ссылка хранится только локально на Steam Deck. Сейчас плагин ожидает именно Clash/Mihomo YAML-подписку.
-            </div>
-            <input
-              type="url"
-              value={urlDraft}
-              placeholder="https://provider.example/subscription"
-              onChange={(event) => setUrlDraft(event.currentTarget.value)}
-              style={inputStyle}
-            />
-            <div style={{ ...actionRowStyle, marginTop: 12 }}>
-              <button
-                style={actionButtonStyle(busyAction !== null)}
-                disabled={busyAction !== null || !urlDraft.trim()}
-                onClick={() =>
-                  void runAction(
-                    "apply-url",
-                    "Подписка сохранена и обновлена",
-                    () => applySubscriptionUrl(urlDraft.trim()),
-                    true,
-                  )
-                }
-              >
-                <FaLink style={{ marginRight: 8 }} />
-                Сохранить и обновить
-              </button>
-              <button
-                style={actionButtonStyle(busyAction !== null)}
-                disabled={busyAction !== null || !state.subscription_url}
-                onClick={() =>
-                  void runAction("refresh", "Подписка обновлена", () => refreshSubscription(), true)
-                }
-              >
-                <FaSyncAlt style={{ marginRight: 8 }} />
-                Обновить ещё раз
-              </button>
-            </div>
-          </div>
+          <TextField
+            label="URL подписки"
+            description="Вставь сюда ссылку на Clash/Mihomo-подписку. Поле теперь использует нативный decky input."
+            value={urlDraft}
+            mustBeURL
+            bShowClearAction
+            bAlwaysShowClearAction
+            onChange={(event) => setUrlDraft(event.currentTarget.value)}
+          />
         </PanelSectionRow>
-
         <PanelSectionRow>
-          <details style={{ width: "100%" }}>
-            <summary style={{ cursor: "pointer", marginBottom: 12 }}>
-              Резервный импорт YAML
-            </summary>
-            <div style={cardStyle}>
-              <textarea
-                value={yamlDraft}
-                onChange={(event) => setYamlDraft(event.currentTarget.value)}
-                placeholder="Вставь Clash/Mihomo YAML сюда, если подписка не импортируется напрямую."
-                style={textareaStyle}
-              />
-              <div style={{ ...actionRowStyle, marginTop: 12 }}>
-                <button
-                  style={actionButtonStyle(busyAction !== null)}
-                  disabled={busyAction !== null || !yamlDraft.trim()}
-                  onClick={() =>
-                    void runAction(
-                      "import-yaml",
-                      "YAML импортирован",
-                      async () => {
-                        const nextState = await importProfileText(yamlDraft.trim());
-                        setYamlDraft("");
-                        return nextState;
-                      },
-                    )
-                  }
-                >
-                  Импортировать YAML
-                </button>
-              </div>
-            </div>
-          </details>
+          <ButtonItem
+            layout="below"
+            disabled={busyAction !== null || !urlDraft.trim()}
+            onClick={() =>
+              void runAction(
+                "apply-url",
+                "Подписка сохранена и обновлена",
+                () => applySubscriptionUrl(urlDraft.trim()),
+                true,
+              )
+            }
+          >
+            Сохранить и обновить подписку
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busyAction !== null || !state.subscription_url}
+            onClick={() =>
+              void runAction("refresh", "Подписка обновлена", () => refreshSubscription(), true)
+            }
+          >
+            Обновить текущую подписку
+          </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Ноды">
+      <PanelSection title="Подключение">
         <PanelSectionRow>
-          <div style={cardStyle}>
-            {state.groups.length > 0 ? (
-              <>
-                <div style={{ ...metaTextStyle, marginBottom: 8 }}>Группа</div>
-                <select
-                  value={currentGroup?.name || ""}
-                  onChange={(event) => setSelectedGroup(event.currentTarget.value)}
-                  style={selectStyle}
-                >
-                  {state.groups.map((group) => (
-                    <option key={group.name} value={group.name}>
-                      {group.name}
-                    </option>
-                  ))}
-                </select>
-
-                <div style={{ ...actionRowStyle, marginTop: 12 }}>
-                  <button
-                    style={actionButtonStyle(busyAction !== null)}
-                    disabled={busyAction !== null || !currentGroup}
-                    onClick={() =>
-                      currentGroup &&
-                      void runAction(
-                        "check-group",
-                        "Проверка серверов завершена",
-                        () => checkGroup(currentGroup.name),
-                      )
-                    }
-                  >
-                    Проверить серверы
-                  </button>
-                </div>
-
-                <div style={{ ...metaTextStyle, marginTop: 12 }}>
-                  Текущая нода: {currentGroup?.current || "не выбрана"}
-                </div>
-                {recommendedProxy && (
-                  <div style={{ ...metaTextStyle, marginTop: 4 }}>
-                    Рекомендуемая нода: {recommendedProxy}
-                  </div>
-                )}
-
-                <div style={{ display: "grid", gap: 10, marginTop: 16 }}>
-                  {currentGroup?.proxies.map((proxyName) => {
-                    const delay = currentHealth[proxyName];
-                    const isCurrent = currentGroup.current === proxyName;
-                    const isRecommended = recommendedProxy === proxyName;
-
-                    return (
-                      <div key={proxyName} style={proxyRowStyle}>
-                        <div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                            <span style={{ fontWeight: 700 }}>{proxyName}</span>
-                            {isCurrent && (
-                              <span style={statusStyle({ ...state, connected: true, controller_ready: true })}>
-                                активна
-                              </span>
-                            )}
-                            {isRecommended && (
-                              <span style={statusStyle({ ...state, connected: false, controller_ready: true })}>
-                                лучшая
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ ...metaTextStyle, marginTop: 6 }}>
-                            Задержка: {formatDelay(delay)}
-                          </div>
-                        </div>
-                        <button
-                          style={actionButtonStyle(busyAction !== null || isCurrent)}
-                          disabled={busyAction !== null || isCurrent}
-                          onClick={() =>
-                            currentGroup &&
-                            void runAction(
-                              `select-${proxyName}`,
-                              "Нода выбрана",
-                              () => selectProxy(currentGroup.name, proxyName),
-                            )
-                          }
-                        >
-                          {isCurrent ? "Выбрана" : "Выбрать"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            ) : (
-              <div style={metaTextStyle}>
-                После импорта подписки здесь появятся группы и список нод.
-              </div>
-            )}
-          </div>
+          <ButtonItem
+            layout="below"
+            disabled={busyAction !== null || !state.has_profile}
+            onClick={() => void runAction("connect", "VPN подключен", () => connectVpn())}
+          >
+            <FaPlug style={{ marginRight: 8 }} />
+            Подключить VPN
+          </ButtonItem>
         </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busyAction !== null || !state.connected}
+            onClick={() => void runAction("disconnect", "VPN отключен", () => disconnectVpn())}
+          >
+            <FaPowerOff style={{ marginRight: 8 }} />
+            Отключить VPN
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Группы и ноды">
+        {state.groups.length > 0 ? (
+          <>
+            <PanelSectionRow>
+              <DropdownItem
+                label="Группа"
+                description="Выбери группу нод для текущей проверки и переключения."
+                rgOptions={groupOptions}
+                selectedOption={currentGroup?.name || ""}
+                onChange={(option) => setSelectedGroup(String(option.data))}
+              />
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <DropdownItem
+                label="Нода"
+                description="Список нод в выбранной группе. В подписи видна задержка после проверки."
+                rgOptions={proxyOptions}
+                selectedOption={selectedProxy}
+                disabled={!currentGroup || proxyOptions.length === 0}
+                onChange={(option) => setSelectedProxy(String(option.data))}
+              />
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={busyAction !== null || !currentGroup}
+                onClick={() =>
+                  currentGroup
+                  && void runAction(
+                    "check-group",
+                    "Проверка серверов завершена",
+                    () => checkGroup(currentGroup.name),
+                  )
+                }
+              >
+                <FaSyncAlt style={{ marginRight: 8 }} />
+                Проверить серверы группы
+              </ButtonItem>
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={busyAction !== null || !currentGroup}
+                onClick={() =>
+                  currentGroup
+                  && void runAction(
+                    "best",
+                    "Выбрана лучшая доступная нода",
+                    () => chooseBestProxy(currentGroup.name),
+                  )
+                }
+              >
+                <FaBolt style={{ marginRight: 8 }} />
+                Найти лучшую ноду
+              </ButtonItem>
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={busyAction !== null || !currentGroup || !selectedProxy}
+                onClick={() =>
+                  currentGroup
+                  && selectedProxy
+                  && void runAction(
+                    "apply-proxy",
+                    "Нода выбрана",
+                    () => selectProxy(currentGroup.name, selectedProxy),
+                  )
+                }
+              >
+                Применить выбранную ноду
+              </ButtonItem>
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <Field
+                label="Текущая нода"
+                description={currentGroup?.current || "Еще не выбрана"}
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <Field
+                label="Рекомендуемая нода"
+                description={recommendedProxy || "Сначала запусти проверку"}
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <Field
+                label="Задержка текущей ноды"
+                description={formatDelay(currentDelay)}
+              />
+            </PanelSectionRow>
+          </>
+        ) : (
+          <PanelSectionRow>
+            <Field
+              label="Ноды еще не загружены"
+              description="После импорта подписки здесь появятся группы и список нод."
+            />
+          </PanelSectionRow>
+        )}
 
         {state.last_error && (
           <PanelSectionRow>
-            <div
-              style={{
-                ...cardStyle,
-                border: "1px solid rgba(248, 113, 113, 0.32)",
-                background: "rgba(45, 12, 20, 0.86)",
-                color: "#fecaca",
-              }}
-            >
-              {state.last_error}
-            </div>
+            <Field
+              label="Последняя ошибка"
+              description={state.last_error}
+            />
           </PanelSectionRow>
         )}
       </PanelSection>
