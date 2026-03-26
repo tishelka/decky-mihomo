@@ -19,7 +19,7 @@ import decky
 
 CONTROLLER_HOST = "127.0.0.1"
 CONTROLLER_PORT = 16753
-HEALTHCHECK_URL = "https://cp.cloudflare.com/generate_204"
+HEALTHCHECK_URL = "https://www.msftconnecttest.com/connecttest.txt"
 HEALTHCHECK_TIMEOUT_MS = 4500
 MIHOMO_RELEASE_API = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SUBSCRIPTION_USER_AGENTS = (
@@ -924,20 +924,17 @@ dns:
   default-nameserver:
     - 77.88.8.8
     - 77.88.8.1
-    - 8.8.8.8
   proxy-server-nameserver:
-    - system
+    - tls://common.dot.dns.yandex.net:853
     - 77.88.8.8
     - 77.88.8.1
   direct-nameserver:
-    - system
+    - tls://common.dot.dns.yandex.net:853
+    - 77.88.8.8
+    - 77.88.8.1
   direct-nameserver-follow-policy: true
   nameserver:
-    - https://dns.google/dns-query#RULES
-    - https://cloudflare-dns.com/dns-query#RULES
-  fallback:
-    - tls://8.8.4.4#RULES
-    - tls://1.0.0.1#RULES
+    - tls://common.dot.dns.yandex.net:853#RULES
   fake-ip-filter:
     - "*.lan"
     - "+.local"
@@ -958,7 +955,8 @@ dns:
     - "speedtest.cros.wr.pvp.net"
 tun:
   enable: {tun_flag}
-  stack: system
+  stack: mixed
+  mtu: 1400
   auto-route: true
   auto-redirect: true
   strict-route: true
