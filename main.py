@@ -78,7 +78,7 @@ class Plugin:
         self.mihomo_log_path = self.log_dir / "mihomo.log"
         self.diagnostics_path = self.log_dir / "diagnostics.txt"
         self.tun_helper_script_path = self.plugin_dir / "scripts" / "install_steamdeck_helper.sh"
-        self.service_control_path = Path("/usr/local/bin") / f"{self.plugin_slug}-servicectl"
+        self.service_control_path = Path("/etc") / self.plugin_slug / "servicectl"
         self.service_name = f"{self.plugin_slug}.service"
         self.service_unit_path = Path("/etc/systemd/system") / self.service_name
         self.sudoers_path = Path("/etc/sudoers.d") / self.plugin_slug

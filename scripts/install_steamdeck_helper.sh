@@ -26,7 +26,8 @@ CONFIG_PATH="${STABLE_SETTINGS_DIR}/mihomo-managed.yaml"
 LOG_PATH="${LOG_DIR}/mihomo.log"
 SERVICE_NAME="${PLUGIN_SLUG}.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
-CONTROL_PATH="/usr/local/bin/${PLUGIN_SLUG}-servicectl"
+CONTROL_DIR="/etc/${PLUGIN_SLUG}"
+CONTROL_PATH="${CONTROL_DIR}/servicectl"
 SUDOERS_PATH="/etc/sudoers.d/${PLUGIN_SLUG}"
 SYSTEMCTL_PATH="$(command -v systemctl)"
 VISUDO_PATH="$(command -v visudo || true)"
@@ -41,6 +42,7 @@ chown -R "${DECK_USER}:${DECK_USER}" "${STABLE_SETTINGS_DIR}"
 touch "${LOG_PATH}"
 chown root:root "${LOG_PATH}"
 chmod 0644 "${LOG_PATH}"
+install -d -m 0755 -o root -g root "${CONTROL_DIR}"
 
 cat >"${SERVICE_PATH}" <<EOF
 [Unit]
@@ -92,6 +94,7 @@ esac
 EOF
 
 chmod 0755 "${CONTROL_PATH}"
+chown root:root "${CONTROL_PATH}"
 
 cat >"${SUDOERS_PATH}" <<EOF
 ${DECK_USER} ALL=(root) NOPASSWD: ${CONTROL_PATH} start
