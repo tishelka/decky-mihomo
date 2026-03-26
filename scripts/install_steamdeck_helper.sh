@@ -28,7 +28,8 @@ SERVICE_NAME="${PLUGIN_SLUG}.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 CONTROL_DIR="/etc/${PLUGIN_SLUG}"
 CONTROL_PATH="${CONTROL_DIR}/servicectl"
-SUDOERS_PATH="/etc/sudoers.d/${PLUGIN_SLUG}"
+SUDOERS_PATH="/etc/sudoers.d/zz-${PLUGIN_SLUG}"
+LEGACY_SUDOERS_PATH="/etc/sudoers.d/${PLUGIN_SLUG}"
 SYSTEMCTL_PATH="$(command -v systemctl)"
 VISUDO_PATH="$(command -v visudo || true)"
 
@@ -96,12 +97,11 @@ EOF
 chmod 0755 "${CONTROL_PATH}"
 chown root:root "${CONTROL_PATH}"
 
+rm -f "${LEGACY_SUDOERS_PATH}"
+
 cat >"${SUDOERS_PATH}" <<EOF
-ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} start
-ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} stop
-ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} restart
-ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} is-active
-ALL ALL=(root) NOPASSWD: ${CONTROL_PATH} show
+Defaults!${CONTROL_PATH} !authenticate
+ALL ALL=(root) NOPASSWD: ${CONTROL_PATH}
 EOF
 
 chmod 0440 "${SUDOERS_PATH}"

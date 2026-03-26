@@ -81,7 +81,8 @@ class Plugin:
         self.service_control_path = Path("/etc") / self.plugin_slug / "servicectl"
         self.service_name = f"{self.plugin_slug}.service"
         self.service_unit_path = Path("/etc/systemd/system") / self.service_name
-        self.sudoers_path = Path("/etc/sudoers.d") / self.plugin_slug
+        self.sudoers_path = Path("/etc/sudoers.d") / f"zz-{self.plugin_slug}"
+        self.legacy_sudoers_path = Path("/etc/sudoers.d") / self.plugin_slug
         self._ensure_directories()
         self._migrate_legacy_settings()
         self.state = self._load_state()
@@ -486,7 +487,7 @@ class Plugin:
     def _is_helper_installed(self) -> bool:
         if (
             not self.service_unit_path.exists()
-            or not self.sudoers_path.exists()
+            or not (self.sudoers_path.exists() or self.legacy_sudoers_path.exists())
             or not self.service_control_path.exists()
         ):
             return False
