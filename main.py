@@ -19,8 +19,13 @@ import decky
 
 CONTROLLER_HOST = "127.0.0.1"
 CONTROLLER_PORT = 16753
-HEALTHCHECK_URL = "https://www.msftconnecttest.com/connecttest.txt"
-HEALTHCHECK_TIMEOUT_MS = 4500
+HEALTHCHECK_URLS = (
+    "http://www.gstatic.com/generate_204",
+    "https://www.gstatic.com/generate_204",
+    "http://www.msftconnecttest.com/connecttest.txt",
+    "http://captive.apple.com/hotspot-detect.html",
+)
+HEALTHCHECK_TIMEOUT_MS = 8000
 MIHOMO_RELEASE_API = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SUBSCRIPTION_USER_AGENTS = (
     "clash-verge/1.7.7",
@@ -36,13 +41,11 @@ SYSTEM_CA_BUNDLE_CANDIDATES = (
 )
 MANAGED_TOP_LEVEL_KEYS = {
     "bind-address",
-    "dns",
     "external-controller",
     "find-process-mode",
     "profile",
     "secret",
     "tun",
-    "unified-delay",
 }
 GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
 SPECIAL_PROXY_NAMES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"}
@@ -489,41 +492,51 @@ class Plugin:
         group_name: str,
         candidates: list[str],
     ) -> dict[str, int | None]:
-        try:
-            response = await self._controller_request(
-                "GET",
-                f"/group/{urllib.parse.quote(group_name, safe='')}/delay",
-                params={
-                    "url": HEALTHCHECK_URL,
-                    "timeout": str(HEALTHCHECK_TIMEOUT_MS),
-                },
-            )
-        except Exception:
-            return {}
+        best_effort: dict[str, int | None] = {}
+        for healthcheck_url in HEALTHCHECK_URLS:
+            try:
+                response = await self._controller_request(
+                    "GET",
+                    f"/group/{urllib.parse.quote(group_name, safe='')}/delay",
+                    params={
+                        "url": healthcheck_url,
+                        "timeout": str(HEALTHCHECK_TIMEOUT_MS),
+                    },
+                )
+            except Exception:
+                continue
 
-        discovered = self._extract_delays(response, set(candidates))
-        return discovered
+            discovered = self._extract_delays(response, set(candidates))
+            if not discovered:
+                continue
+            if any(delay is not None for delay in discovered.values()):
+                return discovered
+            if not best_effort:
+                best_effort = discovered
+
+        return best_effort
 
     async def _delay_each_proxy(self, proxy_names: list[str]) -> dict[str, int | None]:
         semaphore = asyncio.Semaphore(6)
 
         async def _probe(proxy_name: str) -> tuple[str, int | None]:
             async with semaphore:
-                try:
-                    response = await self._controller_request(
-                        "GET",
-                        f"/proxies/{urllib.parse.quote(proxy_name, safe='')}/delay",
-                        params={
-                            "url": HEALTHCHECK_URL,
-                            "timeout": str(HEALTHCHECK_TIMEOUT_MS),
-                        },
-                    )
-                except Exception:
-                    return proxy_name, None
+                for healthcheck_url in HEALTHCHECK_URLS:
+                    try:
+                        response = await self._controller_request(
+                            "GET",
+                            f"/proxies/{urllib.parse.quote(proxy_name, safe='')}/delay",
+                            params={
+                                "url": healthcheck_url,
+                                "timeout": str(HEALTHCHECK_TIMEOUT_MS),
+                            },
+                        )
+                    except Exception:
+                        continue
 
-                delay = response.get("delay")
-                if isinstance(delay, int) and delay > 0:
-                    return proxy_name, delay
+                    delay = response.get("delay")
+                    if isinstance(delay, int) and delay > 0:
+                        return proxy_name, delay
                 return proxy_name, None
 
         results = await asyncio.gather(*[_probe(proxy_name) for proxy_name in proxy_names])
@@ -909,61 +922,21 @@ bind-address: '*'
 external-controller: {CONTROLLER_HOST}:{CONTROLLER_PORT}
 secret: {self.controller_secret}
 find-process-mode: strict
-unified-delay: true
+tcp-concurrent: true
 profile:
   store-selected: true
   store-fake-ip: true
-dns:
-  enable: true
-  listen: 0.0.0.0:1053
-  ipv6: false
-  use-hosts: true
-  use-system-hosts: false
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.1/16
-  respect-rules: true
-  default-nameserver:
-    - 77.88.8.8
-    - 77.88.8.1
-  proxy-server-nameserver:
-    - 77.88.8.8
-    - 77.88.8.1
-  direct-nameserver:
-    - 77.88.8.8
-    - 77.88.8.1
-  direct-nameserver-follow-policy: true
-  nameserver:
-    - https://dns.google/dns-query#RULES
-    - https://dns.quad9.net/dns-query#RULES
-  fake-ip-filter:
-    - "*.lan"
-    - "+.local"
-    - "stun.*.*.*"
-    - "stun.*.*"
-    - "time.windows.com"
-    - "time.nist.gov"
-    - "time.apple.com"
-    - "*.openwrt.pool.ntp.org"
-    - "pool.ntp.org"
-    - "ntp.ubuntu.com"
-    - "*.msftconnecttest.com"
-    - "*.msftncsi.com"
-    - "+.xboxlive.com"
-    - "*.*.stun.playstation.net"
-    - "xbox.*.*.microsoft.com"
-    - "*.ipv6.microsoft.com"
-    - "speedtest.cros.wr.pvp.net"
 tun:
   enable: {tun_flag}
-  stack: system
-  mtu: 1400
+  stack: mixed
+  mtu: 9000
   auto-route: true
-  auto-redirect: false
-  strict-route: false
+  auto-redirect: true
   auto-detect-interface: true
   dns-hijack:
     - any:53
     - tcp://any:53
+  strict-route: true
 """
         return f"{sanitized_source}{managed_block}\n"
 
