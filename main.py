@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import getpass
 import gzip
 import json
+import os
 import re
 import secrets
 import shutil
+import socket
 import ssl
 import stat
 import subprocess
@@ -69,10 +72,11 @@ class Plugin:
         self.state_path = self.settings_dir / "state.json"
         self.profile_source_path = self.settings_dir / "subscription.yaml"
         self.managed_config_path = self.runtime_dir / "mihomo-managed.yaml"
-        self.runtime_bin_dir = self.runtime_dir / "bin"
+        self.runtime_bin_dir = self.settings_dir / "bin"
         self.runtime_mihomo_path = self.runtime_bin_dir / "mihomo"
         self.mihomo_log_path = self.log_dir / "mihomo.log"
         self.diagnostics_path = self.log_dir / "diagnostics.txt"
+        self.tun_helper_script_path = self.plugin_dir / "scripts" / "enable_tun_steamdeck.sh"
         self._ensure_directories()
         self.state = self._load_state()
         self.state["last_error"] = ""
@@ -345,6 +349,8 @@ class Plugin:
         )
         self.process_mode = target_mode
         await self._wait_for_controller()
+        if tun_enabled:
+            await asyncio.to_thread(self._validate_tun_runtime)
 
     async def _stop_core(self) -> None:
         if self.process is not None:
@@ -1083,6 +1089,44 @@ tun:
         lines = self.mihomo_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         return "\n".join(lines[-limit:]).strip() or "Лог пуст."
 
+    def _validate_tun_runtime(self) -> None:
+        log_tail = self._tail_log(limit=80)
+        lowered_log = log_tail.lower()
+        if "start tun listening error" in lowered_log or "configure tun interface: operation not permitted" in lowered_log:
+            raise RuntimeError(self._tun_permission_error_message(log_tail))
+
+        route_table = self._run_diagnostic_command(["ip", "route", "show", "table", "2022"])
+        ip_rules = self._run_diagnostic_command(["ip", "rule", "show"])
+        if "fib table does not exist" in route_table.lower() or "lookup 2022" not in ip_rules:
+            raise RuntimeError(
+                "mihomo запустил controller API, но TUN-маршруты не появились.\n\n"
+                f"{self._tun_permission_error_message(log_tail)}\n\n"
+                f"ip rule show:\n{ip_rules}\n\n"
+                f"ip route show table 2022:\n{route_table}"
+            )
+
+    def _tun_permission_error_message(self, log_tail: str) -> str:
+        helper_hint = ""
+        if self.tun_helper_script_path.exists():
+            helper_hint = (
+                "\n\nВ Desktop Mode выполни helper-скрипт:\n"
+                f"chmod +x '{self.tun_helper_script_path}'\n"
+                f"'{self.tun_helper_script_path}'"
+            )
+
+        binary_hint = (
+            "\n\nЛибо выдай capability вручную:\n"
+            f"sudo setcap cap_net_admin,cap_net_raw,cap_net_bind_service=+ep '{self.runtime_mihomo_path}'"
+        )
+
+        return (
+            "Steam Deck не дал Mihomo права на создание TUN-интерфейса и настройку маршрутов. "
+            "Поэтому controller API поднялся, но системный VPN не работает."
+            f"{helper_hint}{binary_hint}\n\n"
+            "После этого полностью перезапусти Steam или Decky Loader и попробуй подключиться снова.\n\n"
+            f"Хвост лога:\n{log_tail}"
+        )
+
     def _collect_diagnostics(self) -> dict[str, Any]:
         active_group = self.state.get("active_group") or ""
         active_proxy = ""
@@ -1094,14 +1138,17 @@ tun:
             )
 
         binary_path = self._resolve_existing_mihomo()
-        source_profile = self._read_text_file(self.profile_source_path, max_chars=18000)
-        managed_config = self._read_text_file(self.managed_config_path, max_chars=18000)
-        mihomo_log = self._tail_file(self.mihomo_log_path, limit=160, max_chars=18000)
+        source_profile = self._read_text_file(self.profile_source_path, max_chars=6000)
+        managed_config = self._read_text_file(self.managed_config_path, max_chars=8000)
+        mihomo_log = self._tail_file(self.mihomo_log_path, limit=160, max_chars=12000)
+        connectivity_checks = self._run_connectivity_checks()
         network_snapshot = self._collect_network_snapshot()
 
         payload = {
             "generated_at": self._now_iso(),
             "plugin_version": self.plugin_version,
+            "effective_user": getpass.getuser(),
+            "effective_uid": os.geteuid() if hasattr(os, "geteuid") else -1,
             "core_mode": self.process_mode or "stopped",
             "connected": self.process_mode == "tun",
             "controller_ready": self.process is not None and self.process.returncode is None,
@@ -1110,12 +1157,14 @@ tun:
             "binary_path": str(binary_path) if binary_path is not None else "",
             "binary_asset_name": str(self.state.get("runtime_mihomo_asset_name") or ""),
             "runtime_binary_plugin_version": str(self.state.get("runtime_mihomo_plugin_version") or ""),
+            "binary_capabilities": self._read_binary_capabilities(binary_path),
             "default_interface": self._detect_default_interface() or "",
             "active_group": active_group,
             "active_proxy": active_proxy,
             "last_error": str(self.state.get("last_error") or ""),
             "last_notice": str(self.state.get("last_notice") or ""),
             "diagnostics_path": str(self.diagnostics_path),
+            "connectivity_checks": self._mask_sensitive_text(connectivity_checks),
             "source_profile": self._mask_sensitive_text(source_profile),
             "managed_config": self._mask_sensitive_text(managed_config),
             "mihomo_log": self._mask_sensitive_text(mihomo_log),
@@ -1132,12 +1181,14 @@ tun:
         summary_lines = [
             f"Создано: {payload['generated_at']}",
             f"Версия плагина: {payload['plugin_version']}",
+            f"Пользователь backend: {payload['effective_user']} (uid={payload['effective_uid']})",
             f"Режим ядра: {payload['core_mode']}",
             f"Controller готов: {'да' if payload['controller_ready'] else 'нет'}",
             f"Mihomo: {payload['mihomo_version'] or 'неизвестно'}",
             f"Бинарь: {payload['binary_path'] or 'не найден'}",
             f"Asset: {payload['binary_asset_name'] or 'неизвестно'}",
             f"Версия cached core: {payload['runtime_binary_plugin_version'] or 'неизвестно'}",
+            f"Capability на бинаре: {payload['binary_capabilities'] or 'не заданы'}",
             f"Интерфейс по умолчанию: {payload['default_interface'] or 'не определён'}",
             f"Активная группа: {payload['active_group'] or 'нет'}",
             f"Активная нода: {payload['active_proxy'] or 'нет'}",
@@ -1236,6 +1287,14 @@ tun:
             rendered += f"\n\n[exit code: {completed.returncode}]"
         return rendered
 
+    def _read_binary_capabilities(self, binary_path: Path | None) -> str:
+        if binary_path is None:
+            return ""
+        output = self._run_diagnostic_command(["getcap", str(binary_path)])
+        if "Команда недоступна" in output or output == "(пустой вывод)":
+            return ""
+        return output
+
     def _mask_sensitive_text(self, text: str) -> str:
         if not text:
             return text
@@ -1260,6 +1319,60 @@ tun:
             redacted,
         )
         return redacted
+
+    def _run_connectivity_checks(self) -> str:
+        checks = [
+            ("DNS example.com", self._dns_probe("example.com")),
+            ("DNS api.ipify.org", self._dns_probe("api.ipify.org")),
+            ("HTTP http://connectivitycheck.gstatic.com/generate_204", self._http_probe("http://connectivitycheck.gstatic.com/generate_204")),
+            ("HTTPS https://www.gstatic.com/generate_204", self._http_probe("https://www.gstatic.com/generate_204")),
+            ("HTTPS https://api.ipify.org", self._http_probe("https://api.ipify.org")),
+        ]
+        return "\n".join(f"- {title}: {result}" for title, result in checks)
+
+    def _dns_probe(self, host: str) -> str:
+        try:
+            answers = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        except OSError as exc:
+            return f"ERROR {exc}"
+
+        addresses = []
+        for answer in answers[:4]:
+            sockaddr = answer[4]
+            if sockaddr and sockaddr[0] not in addresses:
+                addresses.append(sockaddr[0])
+        if not addresses:
+            return "OK (no addresses returned)"
+        return "OK " + ", ".join(addresses)
+
+    def _http_probe(self, url: str) -> str:
+        request = urllib.request.Request(
+            url,
+            method="GET",
+            headers={"User-Agent": "DeckyMihomoDiag/0.1"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                body = response.read(160)
+                body_text = body.decode("utf-8", errors="replace").strip()
+                body_text = body_text[:80] if body_text else "(empty body)"
+                return f"HTTP {response.status}; body={body_text}"
+        except Exception as exc:
+            return f"ERROR {exc}"
+
+    def _render_diagnostics_report(self, payload: dict[str, Any]) -> str:
+        sections = [
+            ("Сводка", payload["summary"]),
+            ("Проверки связности", payload["connectivity_checks"]),
+            ("Mihomo log", payload["mihomo_log"]),
+            ("Сетевой снимок", payload["network_snapshot"]),
+            ("Managed config", payload["managed_config"]),
+            ("Исходный профиль", payload["source_profile"]),
+        ]
+        rendered = []
+        for title, body in sections:
+            rendered.append(f"=== {title} ===\n{body or 'Пусто.'}")
+        return "\n\n".join(rendered).strip() + "\n"
 
     def _is_group(self, proxy_data: dict[str, Any]) -> bool:
         proxy_type = proxy_data.get("type")
