@@ -1,10 +1,12 @@
 import {
   ButtonItem,
+  ConfirmModal,
   DropdownItem,
   Field,
   PanelSection,
   PanelSectionRow,
   TextField,
+  showModal,
   staticClasses,
 } from "@decky/ui";
 import {
@@ -15,6 +17,7 @@ import {
 import { type CSSProperties, useEffect, useState } from "react";
 import {
   FaBolt,
+  FaEdit,
   FaGlobeEurope,
   FaPlug,
   FaPowerOff,
@@ -164,6 +167,42 @@ function formatDelay(delay: number | null | undefined): string {
   return `${delay} мс`;
 }
 
+type SubscriptionUrlModalProps = {
+  initialValue: string;
+  closeModal: () => void;
+  onSave: (nextValue: string) => void;
+};
+
+function SubscriptionUrlModal(props: SubscriptionUrlModalProps) {
+  const [value, setValue] = useState(props.initialValue);
+
+  return (
+    <ConfirmModal
+      strTitle="URL подписки"
+      strDescription="Окно ввода открывается отдельным modal, чтобы экранная клавиатура Steam Deck работала корректно и не пряталась под боковой шторкой."
+      strOKButtonText="Готово"
+      strCancelButtonText="Отмена"
+      bAllowFullSize
+      onCancel={props.closeModal}
+      onOK={() => {
+        props.onSave(value.trim());
+        props.closeModal();
+      }}
+    >
+      <TextField
+        label="Clash/Mihomo subscription URL"
+        description="Вставь ссылку полностью. После закрытия модального окна нажми ниже кнопку сохранения и обновления."
+        value={value}
+        mustBeURL
+        focusOnMount
+        bShowClearAction
+        bAlwaysShowClearAction
+        onChange={(event) => setValue(event.currentTarget.value)}
+      />
+    </ConfirmModal>
+  );
+}
+
 function Content() {
   const [state, setState] = useState<PluginState>(EMPTY_STATE);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -261,6 +300,25 @@ function Content() {
     };
   });
 
+  const openSubscriptionModal = () => {
+    let modalHandle: { Close: () => void } | undefined;
+    modalHandle = showModal(
+      <SubscriptionUrlModal
+        initialValue={urlDraft}
+        closeModal={() => modalHandle?.Close()}
+        onSave={(nextValue) => setUrlDraft(nextValue)}
+      />,
+      window,
+      {
+        strTitle: "Decky Mihomo",
+        bForcePopOut: true,
+        bHideMainWindowForPopouts: true,
+        popupWidth: 900,
+        popupHeight: 720,
+      },
+    );
+  };
+
   return (
     <>
       <PanelSection>
@@ -310,15 +368,20 @@ function Content() {
 
       <PanelSection title="Подписка">
         <PanelSectionRow>
-          <TextField
-            label="URL подписки"
-            description="Вставь сюда ссылку на Clash/Mihomo-подписку. Поле теперь использует нативный decky input."
-            value={urlDraft}
-            mustBeURL
-            bShowClearAction
-            bAlwaysShowClearAction
-            onChange={(event) => setUrlDraft(event.currentTarget.value)}
+          <Field
+            label="Текущий URL подписки"
+            description={urlDraft || "Ссылка еще не добавлена"}
           />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busyAction !== null}
+            onClick={openSubscriptionModal}
+          >
+            <FaEdit style={{ marginRight: 8 }} />
+            Открыть окно ввода ссылки
+          </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
