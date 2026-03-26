@@ -915,9 +915,10 @@ profile:
   store-fake-ip: true
 dns:
   enable: true
+  listen: 0.0.0.0:1053
   ipv6: false
   use-hosts: true
-  use-system-hosts: true
+  use-system-hosts: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   respect-rules: true
@@ -925,16 +926,15 @@ dns:
     - 77.88.8.8
     - 77.88.8.1
   proxy-server-nameserver:
-    - tls://common.dot.dns.yandex.net:853
     - 77.88.8.8
     - 77.88.8.1
   direct-nameserver:
-    - tls://common.dot.dns.yandex.net:853
     - 77.88.8.8
     - 77.88.8.1
   direct-nameserver-follow-policy: true
   nameserver:
-    - tls://common.dot.dns.yandex.net:853#RULES
+    - https://dns.google/dns-query#RULES
+    - https://dns.quad9.net/dns-query#RULES
   fake-ip-filter:
     - "*.lan"
     - "+.local"
@@ -955,11 +955,11 @@ dns:
     - "speedtest.cros.wr.pvp.net"
 tun:
   enable: {tun_flag}
-  stack: mixed
+  stack: system
   mtu: 1400
   auto-route: true
-  auto-redirect: true
-  strict-route: true
+  auto-redirect: false
+  strict-route: false
   auto-detect-interface: true
   dns-hijack:
     - any:53
