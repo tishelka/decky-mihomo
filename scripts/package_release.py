@@ -21,6 +21,7 @@ OPTIONAL_PATHS = [
     ROOT / "README.md",
     ROOT / "LICENSE",
     ROOT / "dist" / "index.js.map",
+    ROOT / "scripts" / "install_steamdeck_helper.sh",
     ROOT / "bin",
 ]
 

@@ -64,11 +64,12 @@ class Plugin:
         self.process_log_handle = None
         self.proxy_index: dict[str, dict[str, Any]] = {}
         self.controller_secret = secrets.token_urlsafe(24)
-        self.settings_dir = Path(decky.DECKY_PLUGIN_SETTINGS_DIR)
-        self.runtime_dir = Path(decky.DECKY_PLUGIN_RUNTIME_DIR)
-        self.log_dir = Path(decky.DECKY_PLUGIN_LOG_DIR)
         self.plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
-        self.plugin_version = self._read_plugin_version()
+        self.legacy_settings_dir = Path(decky.DECKY_PLUGIN_SETTINGS_DIR)
+        self.plugin_slug, self.plugin_version = self._read_plugin_metadata()
+        self.settings_dir = self._resolve_stable_settings_dir(self.legacy_settings_dir)
+        self.runtime_dir = self.settings_dir
+        self.log_dir = self.settings_dir / "logs"
         self.state_path = self.settings_dir / "state.json"
         self.profile_source_path = self.settings_dir / "subscription.yaml"
         self.managed_config_path = self.runtime_dir / "mihomo-managed.yaml"
@@ -76,8 +77,12 @@ class Plugin:
         self.runtime_mihomo_path = self.runtime_bin_dir / "mihomo"
         self.mihomo_log_path = self.log_dir / "mihomo.log"
         self.diagnostics_path = self.log_dir / "diagnostics.txt"
-        self.tun_helper_script_path = self.plugin_dir / "scripts" / "enable_tun_steamdeck.sh"
+        self.tun_helper_script_path = self.plugin_dir / "scripts" / "install_steamdeck_helper.sh"
+        self.service_name = f"{self.plugin_slug}.service"
+        self.service_unit_path = Path("/etc/systemd/system") / self.service_name
+        self.sudoers_path = Path("/etc/sudoers.d") / self.plugin_slug
         self._ensure_directories()
+        self._migrate_legacy_settings()
         self.state = self._load_state()
         self.state["last_error"] = ""
         self._save_state()
@@ -94,23 +99,52 @@ class Plugin:
     async def _migration(self) -> None:
         decky.logger.info("No migrations required")
 
-    def _read_plugin_version(self) -> str:
+    def _read_plugin_metadata(self) -> tuple[str, str]:
         package_path = self.plugin_dir / "package.json"
         if not package_path.exists():
-            return "0.0.0"
+            return "decky-mihomo", "0.0.0"
 
         try:
             package_data = json.loads(package_path.read_text(encoding="utf-8"))
         except Exception:
-            return "0.0.0"
+            return "decky-mihomo", "0.0.0"
 
+        name = package_data.get("name")
         version = package_data.get("version")
-        if isinstance(version, str) and version.strip():
-            return version.strip()
-        return "0.0.0"
+        safe_name = name.strip() if isinstance(name, str) and name.strip() else "decky-mihomo"
+        safe_version = version.strip() if isinstance(version, str) and version.strip() else "0.0.0"
+        return safe_name, safe_version
+
+    def _resolve_stable_settings_dir(self, legacy_dir: Path) -> Path:
+        parent = legacy_dir.parent
+        if not str(parent):
+            return legacy_dir
+        return parent / self.plugin_slug
+
+    def _migrate_legacy_settings(self) -> None:
+        if self.legacy_settings_dir == self.settings_dir or not self.legacy_settings_dir.exists():
+            return
+
+        candidates = [
+            ("state.json", self.state_path),
+            ("subscription.yaml", self.profile_source_path),
+            ("mihomo-managed.yaml", self.managed_config_path),
+            ("bin/mihomo", self.runtime_mihomo_path),
+            ("logs/mihomo.log", self.mihomo_log_path),
+        ]
+        for relative_name, destination in candidates:
+            source = self.legacy_settings_dir / relative_name
+            if not source.exists() or destination.exists():
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(source, destination)
+            except OSError:
+                continue
 
     async def get_state(self) -> dict[str, Any]:
-        if self.process is not None:
+        await asyncio.to_thread(self._refresh_service_state)
+        if self.process_mode is not None:
             try:
                 await self._sync_from_controller()
             except Exception as exc:  # pragma: no cover - depends on runtime core
@@ -119,9 +153,20 @@ class Plugin:
         payload = dict(self.state)
         payload["core_mode"] = self.process_mode or "stopped"
         payload["connected"] = self.process_mode == "tun"
-        payload["controller_ready"] = self.process is not None and self.process.returncode is None
+        payload["controller_ready"] = (
+            await asyncio.to_thread(self._controller_is_ready)
+            if self.process_mode is not None
+            else False
+        )
         payload["has_profile"] = self.profile_source_path.exists()
         payload["binary_ready"] = self._resolve_existing_mihomo() is not None
+        payload["helper_installed"] = self._is_helper_installed()
+        payload["helper_script_path"] = str(self.tun_helper_script_path)
+        payload["helper_install_command"] = self._helper_install_command()
+        payload["stable_settings_dir"] = str(self.settings_dir)
+        payload["stable_binary_path"] = str(self.runtime_mihomo_path)
+        payload["service_name"] = self.service_name
+        payload["service_unit_path"] = str(self.service_unit_path)
         return payload
 
     async def get_diagnostics(self) -> dict[str, Any]:
@@ -158,7 +203,7 @@ class Plugin:
         self.state["last_notice"] = self._subscription_tls_notice(tls_mode)
         self._save_state()
 
-        should_reload_now = self.process is not None or self._resolve_existing_mihomo() is not None
+        should_reload_now = await asyncio.to_thread(self._service_is_active)
         if not should_reload_now:
             self._clear_runtime_state()
             self._save_state()
@@ -223,7 +268,7 @@ class Plugin:
         if not group_name or not proxy_name:
             raise ValueError("Нужна группа и нода.")
 
-        started_temporarily = self.process is None
+        started_temporarily = not await asyncio.to_thread(self._service_is_active)
         desired_tun = self.process_mode == "tun"
         await self._ensure_core(tun_enabled=desired_tun)
         await self._set_group_proxy(group_name, proxy_name)
@@ -242,7 +287,7 @@ class Plugin:
         if not group_name:
             raise ValueError("Выбери группу для проверки.")
 
-        started_temporarily = self.process is None
+        started_temporarily = not await asyncio.to_thread(self._service_is_active)
         desired_tun = self.process_mode == "tun"
         await self._ensure_core(tun_enabled=desired_tun)
         await self._sync_from_controller()
@@ -258,7 +303,7 @@ class Plugin:
         if not group_name:
             raise ValueError("Выбери группу.")
 
-        started_temporarily = self.process is None
+        started_temporarily = not await asyncio.to_thread(self._service_is_active)
         desired_tun = self.process_mode == "tun"
         await self._ensure_core(tun_enabled=desired_tun)
         await self._sync_from_controller()
@@ -272,7 +317,7 @@ class Plugin:
 
     async def _reload_profile(self, run_healthcheck: bool) -> dict[str, Any]:
         desired_tun = self.process_mode == "tun"
-        started_temporarily = self.process is None and not desired_tun
+        started_temporarily = (not await asyncio.to_thread(self._service_is_active)) and not desired_tun
         await self._ensure_core(tun_enabled=desired_tun, force_restart=True)
         await self._sync_from_controller()
         await self._apply_cached_selections()
@@ -313,64 +358,38 @@ class Plugin:
 
     async def _ensure_core(self, tun_enabled: bool, force_restart: bool = False) -> None:
         target_mode = "tun" if tun_enabled else "controller"
-        if self.process is not None and self.process.returncode is not None:
-            await self._stop_core()
-
-        if (
-            self.process is not None
-            and self.process_mode == target_mode
-            and not force_restart
-        ):
+        await asyncio.to_thread(self._refresh_service_state)
+        if self.process_mode == target_mode and not force_restart:
             return
 
         if not self.profile_source_path.exists():
             raise ValueError("Профиль не найден. Сначала импортируй подписку или YAML.")
 
-        if self.process is not None:
-            await self._stop_core()
-
-        binary_path = await asyncio.to_thread(self._ensure_mihomo_available)
+        await asyncio.to_thread(self._ensure_mihomo_available)
         managed_config = await asyncio.to_thread(self._build_managed_config, tun_enabled)
         await asyncio.to_thread(self.managed_config_path.write_text, managed_config, "utf-8")
-
-        self.process_log_handle = self.mihomo_log_path.open("a", encoding="utf-8")
-        command = [
-            str(binary_path),
-            "-d",
-            str(self.runtime_dir),
-            "-f",
-            str(self.managed_config_path),
-        ]
-        decky.logger.info("Starting mihomo in %s mode", target_mode)
-        self.process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=self.process_log_handle,
-            stderr=self.process_log_handle,
-        )
+        decky.logger.info("Starting mihomo service in %s mode", target_mode)
+        await asyncio.to_thread(self._ensure_helper_ready)
+        await asyncio.to_thread(self._restart_service)
+        self.process = None
         self.process_mode = target_mode
+        self.state["service_mode"] = target_mode
+        self._save_state()
         await self._wait_for_controller()
         if tun_enabled:
             await asyncio.to_thread(self._validate_tun_runtime)
 
     async def _stop_core(self) -> None:
-        if self.process is not None:
-            if self.process.returncode is None:
-                self.process.terminate()
-                try:
-                    await asyncio.wait_for(self.process.wait(), timeout=6)
-                except asyncio.TimeoutError:
-                    self.process.kill()
-                    await self.process.wait()
-            self.process = None
-            self.process_mode = None
-
-        if self.process_log_handle is not None:
-            self.process_log_handle.close()
-            self.process_log_handle = None
+        await asyncio.to_thread(self._stop_service)
+        self.process = None
+        self.process_mode = None
+        self.state["service_mode"] = "stopped"
+        self._save_state()
 
     async def _wait_for_controller(self) -> None:
         for _ in range(30):
-            if self.process is not None and self.process.returncode is not None:
+            await asyncio.to_thread(self._refresh_service_state)
+            if self.process_mode is None:
                 raise RuntimeError(
                     "mihomo завершился раньше времени.\n\n"
                     f"Лог:\n{self._tail_log()}"
@@ -393,6 +412,128 @@ class Plugin:
             "Не удалось дождаться controller API mihomo.\n\n"
             f"Лог:\n{self._tail_log()}"
         )
+
+    def _systemctl_path(self) -> str | None:
+        return shutil.which("systemctl")
+
+    def _service_control_command(self, action: str) -> list[str]:
+        systemctl_path = self._systemctl_path()
+        if not systemctl_path:
+            raise RuntimeError("systemctl не найден в системе SteamOS.")
+        return [systemctl_path, action, self.service_name]
+
+    def _run_service_control(self, action: str) -> str:
+        command = self._service_control_command(action)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            return self._run_command(command)
+        return self._run_command(["sudo", "-n", *command])
+
+    def _run_command(self, command: list[str], timeout: int = 20) -> str:
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Команда завершилась по таймауту: {' '.join(command)}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Не удалось выполнить команду {' '.join(command)}: {exc}") from exc
+
+        stdout = completed.stdout.strip()
+        stderr = completed.stderr.strip()
+        if completed.returncode == 0:
+            return stdout or stderr
+
+        combined = "\n".join(item for item in [stdout, stderr] if item).strip()
+        raise RuntimeError(combined or f"Команда {' '.join(command)} завершилась с кодом {completed.returncode}.")
+
+    def _service_is_active(self) -> bool:
+        try:
+            output = self._run_service_control("is-active")
+        except RuntimeError:
+            return False
+        return output.strip() == "active"
+
+    def _controller_is_ready(self) -> bool:
+        if self.process_mode is None:
+            return False
+        try:
+            self._http_json(
+                f"http://{CONTROLLER_HOST}:{CONTROLLER_PORT}/version",
+                "GET",
+                {"Authorization": f"Bearer {self.controller_secret}"},
+                None,
+            )
+        except Exception:
+            return False
+        return True
+
+    def _refresh_service_state(self) -> None:
+        if self._service_is_active():
+            mode = str(self.state.get("service_mode") or "")
+            self.process_mode = mode if mode in {"tun", "controller"} else "controller"
+        else:
+            self.process_mode = None
+
+    def _is_helper_installed(self) -> bool:
+        if not self.service_unit_path.exists() or not self.sudoers_path.exists():
+            return False
+        systemctl_path = self._systemctl_path()
+        if not systemctl_path:
+            return False
+        try:
+            self._run_command(["sudo", "-n", systemctl_path, "show", self.service_name], timeout=15)
+        except RuntimeError:
+            return False
+        return True
+
+    def _helper_install_command(self) -> str:
+        return f"sudo bash '{self.tun_helper_script_path}'"
+
+    def _build_helper_install_message(self) -> str:
+        return (
+            "Для системного VPN на Steam Deck нужен одноразовый helper с root systemd-сервисом.\n\n"
+            "Перейди в Desktop Mode и один раз выполни:\n"
+            f"{self._helper_install_command()}\n\n"
+            f"Скрипт: {self.tun_helper_script_path}\n"
+            f"Стабильная папка данных: {self.settings_dir}\n"
+            f"Сервис: {self.service_name}\n\n"
+            "После установки helper перезапусти Steam или Decky Loader и снова попробуй подключение."
+        )
+
+    def _ensure_helper_ready(self) -> None:
+        if self._is_helper_installed():
+            return
+        raise RuntimeError(self._build_helper_install_message())
+
+    def _helper_install_message(self) -> str:
+        return (
+            "Для системного VPN на Steam Deck нужен одноразовый helper с root systemd-сервисом.\n\n"
+            "Перейди в Desktop Mode и выполни install helper из репозитория плагина.\n\n"
+            f"Скрипт: {self.tun_helper_script_path}\n"
+            f"Стабильная папка данных: {self.settings_dir}\n"
+            f"Сервис: {self.service_name}\n\n"
+            "После установки helper перезапусти Steam или Decky Loader и снова попробуй подключение."
+        )
+
+    def _restart_service(self) -> None:
+        if self._service_is_active():
+            self._run_service_control("restart")
+            return
+        self._run_service_control("start")
+
+    def _stop_service(self) -> None:
+        if not self._is_helper_installed():
+            return
+        try:
+            self._run_service_control("stop")
+        except RuntimeError:
+            return
 
     async def _sync_from_controller(self) -> None:
         response = await self._controller_request("GET", "/proxies")
@@ -1044,6 +1185,7 @@ tun:
             "last_refreshed_at": "",
             "last_error": "",
             "last_notice": "",
+            "service_mode": "stopped",
             "active_group": "",
             "groups": [],
             "health": {},
@@ -1093,17 +1235,33 @@ tun:
         log_tail = self._tail_log(limit=80)
         lowered_log = log_tail.lower()
         if "start tun listening error" in lowered_log or "configure tun interface: operation not permitted" in lowered_log:
-            raise RuntimeError(self._tun_permission_error_message(log_tail))
+            raise RuntimeError(self._build_tun_permission_error_message(log_tail))
 
         route_table = self._run_diagnostic_command(["ip", "route", "show", "table", "2022"])
         ip_rules = self._run_diagnostic_command(["ip", "rule", "show"])
         if "fib table does not exist" in route_table.lower() or "lookup 2022" not in ip_rules:
             raise RuntimeError(
                 "mihomo запустил controller API, но TUN-маршруты не появились.\n\n"
-                f"{self._tun_permission_error_message(log_tail)}\n\n"
+                f"{self._build_tun_permission_error_message(log_tail)}\n\n"
                 f"ip rule show:\n{ip_rules}\n\n"
                 f"ip route show table 2022:\n{route_table}"
             )
+
+    def _build_tun_permission_error_message(self, log_tail: str) -> str:
+        helper_hint = ""
+        if self.tun_helper_script_path.exists():
+            helper_hint = (
+                "\n\nВ Desktop Mode выполни helper-скрипт:\n"
+                f"{self._helper_install_command()}"
+            )
+
+        return (
+            "Steam Deck не дал Mihomo права на создание TUN-интерфейса и настройку маршрутов. "
+            "Поэтому controller API поднялся, но системный VPN не работает."
+            f"{helper_hint}\n\n"
+            "После этого полностью перезапусти Steam или Decky Loader и попробуй подключиться снова.\n\n"
+            f"Хвост лога:\n{log_tail}"
+        )
 
     def _tun_permission_error_message(self, log_tail: str) -> str:
         helper_hint = ""
@@ -1151,13 +1309,21 @@ tun:
             "effective_uid": os.geteuid() if hasattr(os, "geteuid") else -1,
             "core_mode": self.process_mode or "stopped",
             "connected": self.process_mode == "tun",
-            "controller_ready": self.process is not None and self.process.returncode is None,
+            "controller_ready": self._controller_is_ready(),
             "process_returncode": self.process.returncode if self.process is not None else None,
             "mihomo_version": self.state.get("mihomo_version") or "",
             "binary_path": str(binary_path) if binary_path is not None else "",
             "binary_asset_name": str(self.state.get("runtime_mihomo_asset_name") or ""),
             "runtime_binary_plugin_version": str(self.state.get("runtime_mihomo_plugin_version") or ""),
             "binary_capabilities": self._read_binary_capabilities(binary_path),
+            "helper_installed": self._is_helper_installed(),
+            "helper_script_path": str(self.tun_helper_script_path),
+            "helper_install_command": self._helper_install_command(),
+            "service_name": self.service_name,
+            "service_unit_path": str(self.service_unit_path),
+            "sudoers_path": str(self.sudoers_path),
+            "stable_settings_dir": str(self.settings_dir),
+            "stable_binary_path": str(self.runtime_mihomo_path),
             "default_interface": self._detect_default_interface() or "",
             "active_group": active_group,
             "active_proxy": active_proxy,
@@ -1170,12 +1336,40 @@ tun:
             "mihomo_log": self._mask_sensitive_text(mihomo_log),
             "network_snapshot": self._mask_sensitive_text(network_snapshot),
         }
-        payload["summary"] = self._build_diagnostics_summary(payload)
+        payload["summary"] = self._build_diagnostics_summary_v2(payload)
         self.diagnostics_path.write_text(
             self._render_diagnostics_report(payload),
             encoding="utf-8",
         )
         return payload
+
+    def _build_diagnostics_summary_v2(self, payload: dict[str, Any]) -> str:
+        summary_lines = [
+            f"Создано: {payload['generated_at']}",
+            f"Версия плагина: {payload['plugin_version']}",
+            f"Пользователь backend: {payload['effective_user']} (uid={payload['effective_uid']})",
+            f"Режим ядра: {payload['core_mode']}",
+            f"Controller готов: {'да' if payload['controller_ready'] else 'нет'}",
+            f"Helper установлен: {'да' if payload['helper_installed'] else 'нет'}",
+            f"Mihomo: {payload['mihomo_version'] or 'неизвестно'}",
+            f"Бинарь: {payload['binary_path'] or 'не найден'}",
+            f"Asset: {payload['binary_asset_name'] or 'неизвестно'}",
+            f"Версия cached core: {payload['runtime_binary_plugin_version'] or 'неизвестно'}",
+            f"Capability на бинаре: {payload['binary_capabilities'] or 'не заданы'}",
+            f"Helper-скрипт: {payload['helper_script_path']}",
+            f"Команда helper: {payload['helper_install_command']}",
+            f"Systemd unit: {payload['service_unit_path']}",
+            f"Sudoers: {payload['sudoers_path']}",
+            f"Стабильная папка: {payload['stable_settings_dir']}",
+            f"Интерфейс по умолчанию: {payload['default_interface'] or 'не определён'}",
+            f"Активная группа: {payload['active_group'] or 'нет'}",
+            f"Активная нода: {payload['active_proxy'] or 'нет'}",
+        ]
+        if payload["last_error"]:
+            summary_lines.extend(["", "Последняя ошибка:", payload["last_error"]])
+        if payload["last_notice"]:
+            summary_lines.extend(["", "Последнее предупреждение:", payload["last_notice"]])
+        return "\n".join(summary_lines).strip()
 
     def _build_diagnostics_summary(self, payload: dict[str, Any]) -> str:
         summary_lines = [

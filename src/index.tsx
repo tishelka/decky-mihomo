@@ -52,6 +52,13 @@ type PluginState = {
   controller_ready: boolean;
   has_profile: boolean;
   binary_ready: boolean;
+  helper_installed: boolean;
+  helper_script_path: string;
+  helper_install_command: string;
+  stable_settings_dir: string;
+  stable_binary_path: string;
+  service_name: string;
+  service_unit_path: string;
 };
 
 type DiagnosticsData = {
@@ -72,6 +79,7 @@ type DiagnosticsData = {
   last_notice: string;
   diagnostics_path: string;
   summary: string;
+  connectivity_checks: string;
   source_profile: string;
   managed_config: string;
   mihomo_log: string;
@@ -108,6 +116,13 @@ const EMPTY_STATE: PluginState = {
   controller_ready: false,
   has_profile: false,
   binary_ready: false,
+  helper_installed: false,
+  helper_script_path: "",
+  helper_install_command: "",
+  stable_settings_dir: "",
+  stable_binary_path: "",
+  service_name: "",
+  service_unit_path: "",
 };
 
 const heroStyle: CSSProperties = {
@@ -403,6 +418,7 @@ function DiagnosticsPage() {
         <>
           <PanelSection title="Сводка">
             <DiagnosticsBlock title="Краткая сводка для отправки" text={data.summary} />
+            <DiagnosticsBlock title="Проверки связности" text={data.connectivity_checks} />
           </PanelSection>
 
           <PanelSection title="Лог и конфиг">
@@ -491,6 +507,7 @@ function Content() {
   const currentHealth = currentGroup ? state.health[currentGroup.name] || {} : {};
   const recommendedProxy = currentGroup ? state.recommended_proxies[currentGroup.name] : "";
   const currentDelay = currentGroup?.current ? currentHealth[currentGroup.current] : undefined;
+  const helperMissing = !state.helper_installed;
 
   const groupOptions = state.groups.map((group) => ({
     data: group.name,
@@ -612,11 +629,41 @@ function Content() {
         </PanelSectionRow>
       </PanelSection>
 
+      <PanelSection title="Helper">
+        <PanelSectionRow>
+          <Field
+            label={helperMissing ? "Требуется одноразовая установка" : "Helper уже установлен"}
+            description={
+              helperMissing
+                ? "Для настоящего TUN VPN на Steam Deck плагин использует root systemd-сервис. Установить его нужно только один раз в Desktop Mode."
+                : "Root systemd-сервис уже установлен. Дальше подключение и смена нод работают прямо из Game Mode."
+            }
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Команда для Desktop Mode"
+            description={state.helper_install_command || "sudo bash /path/to/install_steamdeck_helper.sh"}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Helper script"
+            description={state.helper_script_path || "Скрипт появится после обновления плагина"}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Стабильная папка данных"
+            description={state.stable_settings_dir || "Будет показана после загрузки состояния"}
+          />
+        </PanelSectionRow>
+      </PanelSection>
       <PanelSection title="Подключение">
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            disabled={busyAction !== null || !state.has_profile}
+            disabled={busyAction !== null || !state.has_profile || helperMissing}
             onClick={() => void runAction("connect", "VPN подключен", () => connectVpn())}
           >
             <FaPlug style={{ marginRight: 8 }} />
@@ -673,7 +720,7 @@ function Content() {
                 description="Список нод в выбранной группе. В подписи видна задержка после проверки."
                 rgOptions={proxyOptions}
                 selectedOption={selectedProxy}
-                disabled={busyAction !== null || !currentGroup || proxyOptions.length === 0}
+                disabled={busyAction !== null || !currentGroup || proxyOptions.length === 0 || helperMissing}
                 onChange={(option) => handleProxySelection(String(option.data))}
               />
             </PanelSectionRow>
@@ -681,7 +728,7 @@ function Content() {
             <PanelSectionRow>
               <ButtonItem
                 layout="below"
-                disabled={busyAction !== null || !currentGroup}
+                disabled={busyAction !== null || !currentGroup || helperMissing}
                 onClick={() =>
                   currentGroup
                   && void runAction(
@@ -699,7 +746,7 @@ function Content() {
             <PanelSectionRow>
               <ButtonItem
                 layout="below"
-                disabled={busyAction !== null || !currentGroup}
+                disabled={busyAction !== null || !currentGroup || helperMissing}
                 onClick={() =>
                   currentGroup
                   && void runAction(
@@ -717,7 +764,7 @@ function Content() {
             <PanelSectionRow>
               <ButtonItem
                 layout="below"
-                disabled={busyAction !== null || !currentGroup || !selectedProxy}
+                disabled={busyAction !== null || !currentGroup || !selectedProxy || helperMissing}
                 onClick={() =>
                   currentGroup
                   && selectedProxy
