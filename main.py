@@ -63,6 +63,7 @@ class Plugin:
         self.runtime_dir = Path(decky.DECKY_PLUGIN_RUNTIME_DIR)
         self.log_dir = Path(decky.DECKY_PLUGIN_LOG_DIR)
         self.plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
+        self.plugin_version = self._read_plugin_version()
         self.state_path = self.settings_dir / "state.json"
         self.profile_source_path = self.settings_dir / "subscription.yaml"
         self.managed_config_path = self.runtime_dir / "mihomo-managed.yaml"
@@ -85,6 +86,21 @@ class Plugin:
 
     async def _migration(self) -> None:
         decky.logger.info("No migrations required")
+
+    def _read_plugin_version(self) -> str:
+        package_path = self.plugin_dir / "package.json"
+        if not package_path.exists():
+            return "0.0.0"
+
+        try:
+            package_data = json.loads(package_path.read_text(encoding="utf-8"))
+        except Exception:
+            return "0.0.0"
+
+        version = package_data.get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+        return "0.0.0"
 
     async def get_state(self) -> dict[str, Any]:
         if self.process is not None:
@@ -836,9 +852,17 @@ class Plugin:
             return decoded.decode("utf-8-sig", errors="replace")
 
     def _ensure_mihomo_available(self) -> Path:
-        existing = self._resolve_existing_mihomo()
-        if existing is not None:
-            return existing
+        bundled_binary_path = self.plugin_dir / "bin" / "mihomo"
+        if bundled_binary_path.exists():
+            return bundled_binary_path
+
+        cached_runtime_version = str(self.state.get("runtime_mihomo_plugin_version") or "")
+        if self.runtime_mihomo_path.exists() and cached_runtime_version == self.plugin_version:
+            return self.runtime_mihomo_path
+
+        system_path = shutil.which("mihomo")
+        if system_path and not self.runtime_mihomo_path.exists():
+            return Path(system_path)
 
         release_data = self._download_release_metadata()
         asset = self._pick_mihomo_asset(release_data)
@@ -863,6 +887,9 @@ class Plugin:
         self.runtime_mihomo_path.write_bytes(binary)
         current_mode = self.runtime_mihomo_path.stat().st_mode
         self.runtime_mihomo_path.chmod(current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        self.state["runtime_mihomo_plugin_version"] = self.plugin_version
+        self.state["runtime_mihomo_asset_name"] = asset["name"]
+        self._save_state()
         return self.runtime_mihomo_path
 
     def _resolve_existing_mihomo(self) -> Path | None:
@@ -898,9 +925,9 @@ class Plugin:
             return None
 
         priorities = (
-            "mihomo-linux-amd64-compatible",
             "mihomo-linux-amd64-v1-",
             "mihomo-linux-amd64-v1.",
+            "mihomo-linux-amd64-compatible",
             "mihomo-linux-amd64-",
             "mihomo-linux-amd64.",
         )
@@ -912,10 +939,42 @@ class Plugin:
                     return asset
         return None
 
+    def _detect_default_interface(self) -> str | None:
+        route_path = Path("/proc/net/route")
+        if not route_path.exists():
+            return None
+
+        try:
+            lines = route_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            interface_name, destination_hex, _gateway_hex, flags_hex = parts[:4]
+            if interface_name == "lo" or destination_hex != "00000000":
+                continue
+            try:
+                flags = int(flags_hex, 16)
+            except ValueError:
+                continue
+            if flags & 0x2:
+                return interface_name
+
+        return None
+
     def _build_managed_config(self, tun_enabled: bool) -> str:
         source = self.profile_source_path.read_text(encoding="utf-8")
         sanitized_source = self._strip_top_level_keys(source, MANAGED_TOP_LEVEL_KEYS).rstrip()
         tun_flag = "true" if tun_enabled else "false"
+        default_interface = self._detect_default_interface()
+        include_interface_block = ""
+        if default_interface:
+            include_interface_block = f"""
+  include-interface:
+    - {default_interface}"""
         managed_block = f"""
 
 bind-address: '*'
@@ -928,8 +987,8 @@ profile:
   store-fake-ip: true
 tun:
   enable: {tun_flag}
-  stack: mixed
-  mtu: 9000
+  stack: system
+  mtu: 1400
   auto-route: true
   auto-redirect: true
   auto-detect-interface: true
@@ -937,6 +996,7 @@ tun:
     - any:53
     - tcp://any:53
   strict-route: true
+{include_interface_block}
 """
         return f"{sanitized_source}{managed_block}\n"
 
