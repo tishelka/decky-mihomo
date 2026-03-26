@@ -1,0 +1,11 @@
+{
+  "name": "Decky Mihomo",
+  "author": "Leonid",
+  "flags": ["debug", "_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["vpn", "mihomo", "clash", "root"],
+    "description": "Import Clash/Mihomo subscriptions, check node health and switch locations from Steam Deck Game Mode.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}
