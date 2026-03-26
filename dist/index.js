@@ -112,6 +112,7 @@ const EMPTY_STATE = {
     last_profile_source: "",
     last_refreshed_at: "",
     last_error: "",
+    last_notice: "",
     active_group: "",
     groups: [],
     health: {},
@@ -242,8 +243,11 @@ function SubscriptionEditorPage() {
             toaster.toast({
                 title: nextState.last_error
                     ? "Подписка сохранена с предупреждением"
-                    : "Подписка сохранена",
+                    : nextState.last_notice
+                        ? "Подписка сохранена в режиме совместимости"
+                        : "Подписка сохранена",
                 body: nextState.last_error
+                    || nextState.last_notice
                     || "Ссылка и YAML-профиль сохранены, можно возвращаться в плагин.",
             });
             DFL.Navigation.NavigateBack();
@@ -349,7 +353,7 @@ function Content() {
                                         && void runAction("check-group", "Проверка серверов завершена", () => checkGroup(currentGroup.name)), children: [SP_JSX.jsx(FaSyncAlt, { style: { marginRight: 8 } }), "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0441\u0435\u0440\u0432\u0435\u0440\u044B \u0433\u0440\u0443\u043F\u043F\u044B"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !currentGroup, onClick: () => currentGroup
                                         && void runAction("best", "Выбрана лучшая доступная нода", () => chooseBestProxy(currentGroup.name)), children: [SP_JSX.jsx(FaBolt, { style: { marginRight: 8 } }), "\u041D\u0430\u0439\u0442\u0438 \u043B\u0443\u0447\u0448\u0443\u044E \u043D\u043E\u0434\u0443"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !currentGroup || !selectedProxy, onClick: () => currentGroup
                                         && selectedProxy
-                                        && void runAction("apply-proxy", "Нода выбрана", () => selectProxy(currentGroup.name, selectedProxy)), children: "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u0443\u044E \u043D\u043E\u0434\u0443" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0422\u0435\u043A\u0443\u0449\u0430\u044F \u043D\u043E\u0434\u0430", description: currentGroup?.current || "Еще не выбрана" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u043C\u0430\u044F \u043D\u043E\u0434\u0430", description: recommendedProxy || "Сначала запусти проверку" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0430 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043D\u043E\u0434\u044B", description: formatDelay(currentDelay) }) })] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041D\u043E\u0434\u044B \u0435\u0449\u0435 \u043D\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D\u044B", description: "\u041F\u043E\u0441\u043B\u0435 \u0438\u043C\u043F\u043E\u0440\u0442\u0430 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438 \u0437\u0434\u0435\u0441\u044C \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0433\u0440\u0443\u043F\u043F\u044B \u0438 \u0441\u043F\u0438\u0441\u043E\u043A \u043D\u043E\u0434." }) })), state.last_error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043E\u0448\u0438\u0431\u043A\u0430", description: state.last_error }) }))] })] }));
+                                        && void runAction("apply-proxy", "Нода выбрана", () => selectProxy(currentGroup.name, selectedProxy)), children: "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u0443\u044E \u043D\u043E\u0434\u0443" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0422\u0435\u043A\u0443\u0449\u0430\u044F \u043D\u043E\u0434\u0430", description: currentGroup?.current || "Еще не выбрана" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u043C\u0430\u044F \u043D\u043E\u0434\u0430", description: recommendedProxy || "Сначала запусти проверку" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0430 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043D\u043E\u0434\u044B", description: formatDelay(currentDelay) }) })] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041D\u043E\u0434\u044B \u0435\u0449\u0435 \u043D\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D\u044B", description: "\u041F\u043E\u0441\u043B\u0435 \u0438\u043C\u043F\u043E\u0440\u0442\u0430 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438 \u0437\u0434\u0435\u0441\u044C \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0433\u0440\u0443\u043F\u043F\u044B \u0438 \u0441\u043F\u0438\u0441\u043E\u043A \u043D\u043E\u0434." }) })), state.last_notice && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0412\u0430\u0436\u043D\u043E\u0435 \u0437\u0430\u043C\u0435\u0447\u0430\u043D\u0438\u0435", description: state.last_notice }) })), state.last_error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043E\u0448\u0438\u0431\u043A\u0430", description: state.last_error }) }))] })] }));
 }
 var index = definePlugin(() => {
     routerHook.addRoute(EDIT_ROUTE, SubscriptionEditorPage, {

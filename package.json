@@ -1,6 +1,6 @@
 {
   "name": "decky-mihomo",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Decky Loader plugin for Clash/Mihomo subscriptions with node health checks in Game Mode",
   "type": "module",
   "scripts": {

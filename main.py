@@ -6,6 +6,7 @@ import gzip
 import json
 import secrets
 import shutil
+import ssl
 import stat
 import urllib.error
 import urllib.parse
@@ -26,6 +27,12 @@ SUBSCRIPTION_USER_AGENTS = (
     "Clash",
     "Mihomo",
     "DeckyMihomo/0.1 (+https://github.com/SteamDeckHomebrew/decky-loader)",
+)
+SYSTEM_CA_BUNDLE_CANDIDATES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
 )
 MANAGED_TOP_LEVEL_KEYS = {
     "bind-address",
@@ -106,9 +113,10 @@ class Plugin:
             raise ValueError("Сначала добавь ссылку на подписку.")
 
         try:
-            raw_profile = await asyncio.to_thread(self._download_text, subscription_url)
+            raw_profile, tls_mode = await asyncio.to_thread(self._download_text, subscription_url)
         except Exception as exc:
             self.state["last_error"] = str(exc)
+            self.state["last_notice"] = ""
             self._save_state()
             raise
 
@@ -116,6 +124,7 @@ class Plugin:
         self.state["last_profile_source"] = "subscription"
         self.state["last_refreshed_at"] = self._now_iso()
         self.state["last_error"] = ""
+        self.state["last_notice"] = self._subscription_tls_notice(tls_mode)
         self._save_state()
 
         should_reload_now = self.process is not None or self._resolve_existing_mihomo() is not None
@@ -143,6 +152,7 @@ class Plugin:
         await asyncio.to_thread(self.profile_source_path.write_text, profile_text, "utf-8")
         self.state["last_profile_source"] = "manual"
         self.state["last_error"] = ""
+        self.state["last_notice"] = ""
         self._save_state()
         return await self._reload_profile(run_healthcheck=True)
 
@@ -579,11 +589,11 @@ class Plugin:
             return {}
         return json.loads(body.decode("utf-8"))
 
-    def _download_text(self, url: str) -> str:
+    def _download_text(self, url: str) -> tuple[str, str]:
         attempts: list[str] = []
         for user_agent in SUBSCRIPTION_USER_AGENTS:
             try:
-                text = self._download_text_once(url, user_agent)
+                text, tls_mode = self._download_text_once(url, user_agent)
             except RuntimeError as exc:
                 attempts.append(f"{user_agent}: {exc}")
                 continue
@@ -591,7 +601,7 @@ class Plugin:
             normalized_text, format_error = self._normalize_subscription_text(text)
             if normalized_text is not None:
                 decky.logger.info("Subscription downloaded with User-Agent %s", user_agent)
-                return normalized_text
+                return normalized_text, tls_mode
 
             attempts.append(f"{user_agent}: {format_error}")
 
@@ -603,24 +613,86 @@ class Plugin:
             f"{suffix}"
         )
 
-    def _download_text_once(self, url: str, user_agent: str) -> str:
+    def _download_text_once(self, url: str, user_agent: str) -> tuple[str, str]:
         headers = {
             "User-Agent": user_agent,
             "Accept": "application/x-yaml, text/yaml, text/plain, */*",
         }
-        request = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=25) as response:
-                body = response.read()
+            return self._download_text_with_context(url, headers, context=None), "verified"
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            if not self._is_certificate_verification_failure(exc.reason):
+                raise RuntimeError(f"network error: {exc.reason}") from exc
+
+        for bundle_path in self._existing_ca_bundle_paths():
+            try:
+                custom_context = ssl.create_default_context(cafile=str(bundle_path))
+                decky.logger.warning(
+                    "Retrying subscription download with explicit CA bundle %s for %s",
+                    bundle_path,
+                    user_agent,
+                )
+                return self._download_text_with_context(url, headers, context=custom_context), "system-ca"
+            except urllib.error.HTTPError as exc:
+                raise RuntimeError(f"HTTP {exc.code}") from exc
+            except urllib.error.URLError as exc:
+                if not self._is_certificate_verification_failure(exc.reason):
+                    raise RuntimeError(f"network error: {exc.reason}") from exc
+
+        try:
+            decky.logger.warning(
+                "Retrying subscription download without TLS verification for %s",
+                user_agent,
+            )
+            insecure_context = ssl._create_unverified_context()
+            return self._download_text_with_context(url, headers, context=insecure_context), "insecure"
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"network error: {exc.reason}") from exc
 
+    def _download_text_with_context(
+        self,
+        url: str,
+        headers: dict[str, str],
+        context: ssl.SSLContext | None,
+    ) -> str:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=25, context=context) as response:
+            body = response.read()
+
         try:
             return body.decode("utf-8")
         except UnicodeDecodeError:
             return body.decode("utf-8-sig", errors="replace")
+
+    def _existing_ca_bundle_paths(self) -> list[Path]:
+        return [Path(path) for path in SYSTEM_CA_BUNDLE_CANDIDATES if Path(path).exists()]
+
+    def _is_certificate_verification_failure(self, reason: Any) -> bool:
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return True
+
+        if isinstance(reason, ssl.SSLError):
+            text = str(reason).upper()
+            return "CERTIFICATE_VERIFY_FAILED" in text
+
+        return "CERTIFICATE_VERIFY_FAILED" in str(reason).upper()
+
+    def _subscription_tls_notice(self, tls_mode: str) -> str:
+        if tls_mode == "system-ca":
+            return (
+                "Подписка скачана через системный CA bundle SteamOS. "
+                "Если провайдер обновит сертификаты, этот обход может больше не понадобиться."
+            )
+        if tls_mode == "insecure":
+            return (
+                "Подписка скачана в режиме совместимости TLS без проверки цепочки сертификатов. "
+                "Это менее безопасно, чем обычный HTTPS, поэтому используй только доверенную ссылку."
+            )
+        return ""
 
     def _normalize_subscription_text(self, text: str) -> tuple[str | None, str]:
         normalized = text.strip().lstrip("\ufeff")
@@ -807,6 +879,7 @@ tun:
             "last_profile_source": "",
             "last_refreshed_at": "",
             "last_error": "",
+            "last_notice": "",
             "active_group": "",
             "groups": [],
             "health": {},

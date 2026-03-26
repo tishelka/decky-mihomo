@@ -39,6 +39,7 @@ type PluginState = {
   last_profile_source: string;
   last_refreshed_at: string;
   last_error: string;
+  last_notice: string;
   active_group: string;
   groups: GroupSummary[];
   health: Record<string, DelayMap>;
@@ -68,6 +69,7 @@ const EMPTY_STATE: PluginState = {
   last_profile_source: "",
   last_refreshed_at: "",
   last_error: "",
+  last_notice: "",
   active_group: "",
   groups: [],
   health: {},
@@ -212,8 +214,11 @@ function SubscriptionEditorPage() {
       toaster.toast({
         title: nextState.last_error
           ? "Подписка сохранена с предупреждением"
+          : nextState.last_notice
+            ? "Подписка сохранена в режиме совместимости"
           : "Подписка сохранена",
         body: nextState.last_error
+          || nextState.last_notice
           || "Ссылка и YAML-профиль сохранены, можно возвращаться в плагин.",
       });
       Navigation.NavigateBack();
@@ -576,6 +581,15 @@ function Content() {
             <Field
               label="Ноды еще не загружены"
               description="После импорта подписки здесь появятся группы и список нод."
+            />
+          </PanelSectionRow>
+        )}
+
+        {state.last_notice && (
+          <PanelSectionRow>
+            <Field
+              label="Важное замечание"
+              description={state.last_notice}
             />
           </PanelSectionRow>
         )}
