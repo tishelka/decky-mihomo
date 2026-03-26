@@ -36,6 +36,7 @@ SYSTEM_CA_BUNDLE_CANDIDATES = (
 )
 MANAGED_TOP_LEVEL_KEYS = {
     "bind-address",
+    "dns",
     "external-controller",
     "find-process-mode",
     "profile",
@@ -912,6 +913,49 @@ unified-delay: true
 profile:
   store-selected: true
   store-fake-ip: true
+dns:
+  enable: true
+  ipv6: false
+  use-hosts: true
+  use-system-hosts: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  respect-rules: true
+  default-nameserver:
+    - 77.88.8.8
+    - 77.88.8.1
+    - 8.8.8.8
+  proxy-server-nameserver:
+    - system
+    - 77.88.8.8
+    - 77.88.8.1
+  direct-nameserver:
+    - system
+  direct-nameserver-follow-policy: true
+  nameserver:
+    - https://dns.google/dns-query#RULES
+    - https://cloudflare-dns.com/dns-query#RULES
+  fallback:
+    - tls://8.8.4.4#RULES
+    - tls://1.0.0.1#RULES
+  fake-ip-filter:
+    - "*.lan"
+    - "+.local"
+    - "stun.*.*.*"
+    - "stun.*.*"
+    - "time.windows.com"
+    - "time.nist.gov"
+    - "time.apple.com"
+    - "*.openwrt.pool.ntp.org"
+    - "pool.ntp.org"
+    - "ntp.ubuntu.com"
+    - "*.msftconnecttest.com"
+    - "*.msftncsi.com"
+    - "+.xboxlive.com"
+    - "*.*.stun.playstation.net"
+    - "xbox.*.*.microsoft.com"
+    - "*.ipv6.microsoft.com"
+    - "speedtest.cros.wr.pvp.net"
 tun:
   enable: {tun_flag}
   stack: system
