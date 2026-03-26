@@ -157,25 +157,32 @@ class Plugin:
         return await self._reload_profile(run_healthcheck=True)
 
     async def connect(self) -> dict[str, Any]:
-        if not self.profile_source_path.exists():
-            if self.state.get("subscription_url"):
-                await self.refresh_subscription()
-            else:
-                raise ValueError("Сначала добавь ссылку на подписку или импортируй YAML.")
+        try:
+            if not self.profile_source_path.exists():
+                if self.state.get("subscription_url"):
+                    await self.refresh_subscription()
+                else:
+                    raise ValueError("Сначала добавь ссылку на подписку или импортируй YAML.")
 
-        await self._ensure_core(tun_enabled=True, force_restart=self.process_mode != "tun")
-        await self._sync_from_controller()
-        await self._apply_cached_selections()
-        await self._sync_from_controller()
-
-        active_group = self._resolve_active_group_name()
-        if active_group:
-            await self._check_group_internal(active_group, auto_select=True)
+            await self._ensure_core(tun_enabled=True, force_restart=self.process_mode != "tun")
+            await self._sync_from_controller()
+            await self._apply_cached_selections()
             await self._sync_from_controller()
 
-        self.state["last_error"] = ""
-        self._save_state()
-        return await self.get_state()
+            active_group = self._resolve_active_group_name()
+            if active_group:
+                await self._check_group_internal(active_group, auto_select=True)
+                await self._sync_from_controller()
+
+            self.state["last_error"] = ""
+            self._save_state()
+            return await self.get_state()
+        except Exception as exc:
+            await self._stop_core()
+            self._clear_runtime_state()
+            self.state["last_error"] = str(exc)
+            self._save_state()
+            raise
 
     async def disconnect(self) -> dict[str, Any]:
         await self._stop_core()
@@ -659,14 +666,82 @@ class Plugin:
         headers: dict[str, str],
         context: ssl.SSLContext | None,
     ) -> str:
-        request = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(request, timeout=25, context=context) as response:
-            body = response.read()
+        body = self._download_bytes_with_context(url, headers, context=context, timeout=25)
 
         try:
             return body.decode("utf-8")
         except UnicodeDecodeError:
             return body.decode("utf-8-sig", errors="replace")
+
+    def _download_bytes_with_context(
+        self,
+        url: str,
+        headers: dict[str, str],
+        context: ssl.SSLContext | None,
+        timeout: int,
+    ) -> bytes:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            return response.read()
+
+    def _download_bytes_tls_compat(
+        self,
+        url: str,
+        headers: dict[str, str],
+        timeout: int,
+        label: str,
+        allow_insecure: bool = True,
+    ) -> tuple[bytes, str]:
+        try:
+            return self._download_bytes_with_context(url, headers, context=None, timeout=timeout), "verified"
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"{label}: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            if not self._is_certificate_verification_failure(exc.reason):
+                raise RuntimeError(f"{label}: network error: {exc.reason}") from exc
+
+        for bundle_path in self._existing_ca_bundle_paths():
+            try:
+                custom_context = ssl.create_default_context(cafile=str(bundle_path))
+                decky.logger.warning(
+                    "Retrying %s with explicit CA bundle %s",
+                    label,
+                    bundle_path,
+                )
+                return (
+                    self._download_bytes_with_context(
+                        url,
+                        headers,
+                        context=custom_context,
+                        timeout=timeout,
+                    ),
+                    "system-ca",
+                )
+            except urllib.error.HTTPError as exc:
+                raise RuntimeError(f"{label}: HTTP {exc.code}") from exc
+            except urllib.error.URLError as exc:
+                if not self._is_certificate_verification_failure(exc.reason):
+                    raise RuntimeError(f"{label}: network error: {exc.reason}") from exc
+
+        if not allow_insecure:
+            raise RuntimeError(f"{label}: TLS certificate verification failed")
+
+        try:
+            decky.logger.warning("Retrying %s without TLS verification", label)
+            insecure_context = ssl._create_unverified_context()
+            return (
+                self._download_bytes_with_context(
+                    url,
+                    headers,
+                    context=insecure_context,
+                    timeout=timeout,
+                ),
+                "insecure",
+            )
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"{label}: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"{label}: network error: {exc.reason}") from exc
 
     def _existing_ca_bundle_paths(self) -> list[Path]:
         return [Path(path) for path in SYSTEM_CA_BUNDLE_CANDIDATES if Path(path).exists()]
@@ -755,13 +830,16 @@ class Plugin:
 
         download_url = asset["browser_download_url"]
         decky.logger.info("Downloading mihomo asset %s", asset["name"])
-        request = urllib.request.Request(
+        headers = {
+            "User-Agent": "DeckyMihomo/0.1",
+            "Accept": "application/octet-stream, */*",
+        }
+        compressed_binary, _tls_mode = self._download_bytes_tls_compat(
             download_url,
-            headers={"User-Agent": "DeckyMihomo/0.1"},
-            method="GET",
+            headers=headers,
+            timeout=60,
+            label="mihomo binary",
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            compressed_binary = response.read()
 
         binary = gzip.decompress(compressed_binary)
         self.runtime_bin_dir.mkdir(parents=True, exist_ok=True)
@@ -786,16 +864,16 @@ class Plugin:
         return None
 
     def _download_release_metadata(self) -> dict[str, Any]:
-        request = urllib.request.Request(
+        body, _tls_mode = self._download_bytes_tls_compat(
             MIHOMO_RELEASE_API,
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "DeckyMihomo/0.1",
             },
-            method="GET",
+            timeout=25,
+            label="GitHub release metadata",
         )
-        with urllib.request.urlopen(request, timeout=25) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return json.loads(body.decode("utf-8"))
 
     def _pick_mihomo_asset(self, release_data: dict[str, Any]) -> dict[str, Any] | None:
         assets = release_data.get("assets")
