@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import json
 import secrets
@@ -20,6 +21,12 @@ CONTROLLER_PORT = 16753
 HEALTHCHECK_URL = "https://cp.cloudflare.com/generate_204"
 HEALTHCHECK_TIMEOUT_MS = 4500
 MIHOMO_RELEASE_API = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+SUBSCRIPTION_USER_AGENTS = (
+    "clash-verge/1.7.7",
+    "Clash",
+    "Mihomo",
+    "DeckyMihomo/0.1 (+https://github.com/SteamDeckHomebrew/decky-loader)",
+)
 MANAGED_TOP_LEVEL_KEYS = {
     "bind-address",
     "external-controller",
@@ -98,10 +105,17 @@ class Plugin:
         if not subscription_url:
             raise ValueError("Сначала добавь ссылку на подписку.")
 
-        raw_profile = await asyncio.to_thread(self._download_text, subscription_url)
-        await asyncio.to_thread(self.profile_source_path.write_text, raw_profile, "utf-8")
-        self.state["last_profile_source"] = "subscription"
-        return await self._reload_profile(run_healthcheck=True)
+        try:
+            raw_profile = await asyncio.to_thread(self._download_text, subscription_url)
+            await asyncio.to_thread(self.profile_source_path.write_text, raw_profile, "utf-8")
+            self.state["last_profile_source"] = "subscription"
+            self.state["last_error"] = ""
+            self._save_state()
+            return await self._reload_profile(run_healthcheck=True)
+        except Exception as exc:
+            self.state["last_error"] = str(exc)
+            self._save_state()
+            raise
 
     async def import_profile_text(self, yaml_text: str) -> dict[str, Any]:
         profile_text = yaml_text.strip()
@@ -548,29 +562,96 @@ class Plugin:
         return json.loads(body.decode("utf-8"))
 
     def _download_text(self, url: str) -> str:
+        attempts: list[str] = []
+        for user_agent in SUBSCRIPTION_USER_AGENTS:
+            try:
+                text = self._download_text_once(url, user_agent)
+            except RuntimeError as exc:
+                attempts.append(f"{user_agent}: {exc}")
+                continue
+
+            normalized_text, format_error = self._normalize_subscription_text(text)
+            if normalized_text is not None:
+                decky.logger.info("Subscription downloaded with User-Agent %s", user_agent)
+                return normalized_text
+
+            attempts.append(f"{user_agent}: {format_error}")
+
+        details = "\n".join(f"- {item}" for item in attempts[:4])
+        suffix = f"\n\nПроверенные варианты:\n{details}" if details else ""
+        raise RuntimeError(
+            "Не удалось получить рабочую Clash/Mihomo-подписку по этой ссылке. "
+            "Провайдер, вероятно, отдает разный ответ в зависимости от клиента."
+            f"{suffix}"
+        )
+
+    def _download_text_once(self, url: str, user_agent: str) -> str:
         headers = {
-            "User-Agent": "DeckyMihomo/0.1 (+https://github.com/SteamDeckHomebrew/decky-loader)"
+            "User-Agent": user_agent,
+            "Accept": "application/x-yaml, text/yaml, text/plain, */*",
         }
         request = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(request, timeout=25) as response:
                 body = response.read()
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"Подписка вернула HTTP {exc.code}.") from exc
+            raise RuntimeError(f"HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Не удалось скачать подписку: {exc.reason}") from exc
+            raise RuntimeError(f"network error: {exc.reason}") from exc
 
         try:
-            text = body.decode("utf-8")
+            return body.decode("utf-8")
         except UnicodeDecodeError:
-            text = body.decode("utf-8-sig", errors="replace")
+            return body.decode("utf-8-sig", errors="replace")
 
-        if "proxies:" not in text and "proxy-groups:" not in text:
-            raise RuntimeError(
-                "Подписка не похожа на Clash/Mihomo YAML. "
-                "Сейчас плагин ожидает именно такой формат."
-            )
-        return text
+    def _normalize_subscription_text(self, text: str) -> tuple[str | None, str]:
+        normalized = text.strip().lstrip("\ufeff")
+        if self._looks_like_clash_yaml(normalized):
+            return f"{normalized}\n", ""
+
+        decoded = self._try_decode_base64_text(normalized)
+        if decoded:
+            decoded = decoded.strip().lstrip("\ufeff")
+            if self._looks_like_clash_yaml(decoded):
+                return f"{decoded}\n", ""
+            if self._looks_like_link_subscription(decoded):
+                return None, "вернулся base64-список VLESS/VMess ссылок, а не Clash YAML"
+
+        if self._looks_like_link_subscription(normalized):
+            return None, "вернулся список VLESS/VMess ссылок, а не Clash YAML"
+
+        return None, "ответ не похож на Clash/Mihomo YAML"
+
+    def _looks_like_clash_yaml(self, text: str) -> bool:
+        return "proxies:" in text and ("proxy-groups:" in text or "rules:" in text)
+
+    def _looks_like_link_subscription(self, text: str) -> bool:
+        link_prefixes = (
+            "vless://",
+            "vmess://",
+            "trojan://",
+            "ss://",
+            "ssr://",
+            "tuic://",
+            "hysteria://",
+        )
+        return any(text.startswith(prefix) for prefix in link_prefixes)
+
+    def _try_decode_base64_text(self, text: str) -> str | None:
+        compact = "".join(text.split())
+        if len(compact) < 32:
+            return None
+
+        padding = "=" * (-len(compact) % 4)
+        try:
+            decoded = base64.b64decode(f"{compact}{padding}", validate=True)
+        except Exception:
+            return None
+
+        try:
+            return decoded.decode("utf-8")
+        except UnicodeDecodeError:
+            return decoded.decode("utf-8-sig", errors="replace")
 
     def _ensure_mihomo_available(self) -> Path:
         existing = self._resolve_existing_mihomo()
