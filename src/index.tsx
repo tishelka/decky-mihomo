@@ -508,6 +508,7 @@ function Content() {
   const recommendedProxy = currentGroup ? state.recommended_proxies[currentGroup.name] : "";
   const currentDelay = currentGroup?.current ? currentHealth[currentGroup.current] : undefined;
   const helperMissing = !state.helper_installed;
+  const canConnect = !helperMissing && (state.has_profile || Boolean(state.subscription_url));
 
   const groupOptions = state.groups.map((group) => ({
     data: group.name,
@@ -663,7 +664,7 @@ function Content() {
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            disabled={busyAction !== null || !state.has_profile || helperMissing}
+            disabled={busyAction !== null || !canConnect}
             onClick={() => void runAction("connect", "VPN подключен", () => connectVpn())}
           >
             <FaPlug style={{ marginRight: 8 }} />
@@ -849,3 +850,5 @@ export default definePlugin(() => {
     },
   };
 });
+
+

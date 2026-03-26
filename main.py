@@ -486,10 +486,6 @@ class Plugin:
         systemctl_path = self._systemctl_path()
         if not systemctl_path:
             return False
-        try:
-            self._run_command(["sudo", "-n", systemctl_path, "show", self.service_name], timeout=15)
-        except RuntimeError:
-            return False
         return True
 
     def _helper_install_command(self) -> str:
