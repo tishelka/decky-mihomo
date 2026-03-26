@@ -16,6 +16,7 @@ if (api._version != API_VERSION) {
     console.warn(`[@decky/api] Requested API version ${API_VERSION} but the running loader only supports version ${api._version}. Some features may not work.`);
 }
 const callable = api.callable;
+const routerHook = api.routerHook;
 const toaster = api.toaster;
 const definePlugin = (fn) => {
     return (...args) => {
@@ -97,6 +98,7 @@ function FaTachometerAlt (props) {
   return GenIcon({"attr":{"viewBox":"0 0 320 512"},"child":[{"tag":"path","attr":{"d":"M296 160H180.6l42.6-129.8C227.2 15 215.7 0 200 0H56C44 0 33.8 8.9 32.2 20.8l-32 240C-1.7 275.2 9.5 288 24 288h118.7L96.6 482.5c-3.6 15.2 8 29.5 23.3 29.5 8.4 0 16.4-4.4 20.8-12l176-304c9.3-15.9-2.2-36-20.7-36z"},"child":[]}]})(props);
 }
 
+const EDIT_ROUTE = "/decky-mihomo/subscription";
 const getState = callable("get_state");
 const applySubscriptionUrl = callable("apply_subscription_url");
 const refreshSubscription = callable("refresh_subscription");
@@ -201,21 +203,65 @@ function formatDelay(delay) {
     }
     return `${delay} мс`;
 }
-function SubscriptionUrlModal(props) {
-    const [value, setValue] = SP_REACT.useState(props.initialValue);
-    return (SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "URL \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438", strDescription: "\u041E\u043A\u043D\u043E \u0432\u0432\u043E\u0434\u0430 \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u044B\u043C modal, \u0447\u0442\u043E\u0431\u044B \u044D\u043A\u0440\u0430\u043D\u043D\u0430\u044F \u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u0430 Steam Deck \u0440\u0430\u0431\u043E\u0442\u0430\u043B\u0430 \u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E \u0438 \u043D\u0435 \u043F\u0440\u044F\u0442\u0430\u043B\u0430\u0441\u044C \u043F\u043E\u0434 \u0431\u043E\u043A\u043E\u0432\u043E\u0439 \u0448\u0442\u043E\u0440\u043A\u043E\u0439.", strOKButtonText: "\u0413\u043E\u0442\u043E\u0432\u043E", strCancelButtonText: "\u041E\u0442\u043C\u0435\u043D\u0430", bAllowFullSize: true, onCancel: props.closeModal, onOK: () => {
-            props.onSave(value.trim());
-            props.closeModal();
-        }, children: SP_JSX.jsx(DFL.TextField, { label: "Clash/Mihomo subscription URL", description: "\u0412\u0441\u0442\u0430\u0432\u044C \u0441\u0441\u044B\u043B\u043A\u0443 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E. \u041F\u043E\u0441\u043B\u0435 \u0437\u0430\u043A\u0440\u044B\u0442\u0438\u044F \u043C\u043E\u0434\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u043E\u043A\u043D\u0430 \u043D\u0430\u0436\u043C\u0438 \u043D\u0438\u0436\u0435 \u043A\u043D\u043E\u043F\u043A\u0443 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F \u0438 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.", value: value, mustBeURL: true, focusOnMount: true, bShowClearAction: true, bAlwaysShowClearAction: true, onChange: (event) => setValue(event.currentTarget.value) }) }));
+function SubscriptionEditorPage() {
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const [draft, setDraft] = SP_REACT.useState("");
+    const [savedValue, setSavedValue] = SP_REACT.useState("");
+    const [loaded, setLoaded] = SP_REACT.useState(false);
+    SP_REACT.useEffect(() => {
+        let cancelled = false;
+        void getState()
+            .then((nextState) => {
+            if (cancelled) {
+                return;
+            }
+            setDraft(nextState.subscription_url || "");
+            setSavedValue(nextState.subscription_url || "");
+            setLoaded(true);
+        })
+            .catch((error) => {
+            if (cancelled) {
+                return;
+            }
+            toaster.toast({
+                title: "Не удалось загрузить настройки",
+                body: error instanceof Error ? error.message : String(error),
+            });
+            setLoaded(true);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+    const saveAndRefresh = async () => {
+        setBusy(true);
+        try {
+            const nextState = await applySubscriptionUrl(draft.trim());
+            setSavedValue(nextState.subscription_url || draft.trim());
+            toaster.toast({
+                title: "Подписка сохранена",
+                body: "Профиль обновлен, можно возвращаться в плагин.",
+            });
+            DFL.Navigation.NavigateBack();
+        }
+        catch (error) {
+            toaster.toast({
+                title: "Не удалось сохранить подписку",
+                body: error instanceof Error ? error.message : String(error),
+            });
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsxs(DFL.PanelSection, { title: "\u0420\u0435\u0434\u0430\u043A\u0442\u043E\u0440 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041F\u043E\u0447\u0435\u043C\u0443 \u044D\u0442\u043E \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430", description: "\u0422\u0430\u043A \u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u0430 Steam Deck \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u043E\u0432\u0435\u0440\u0445 \u043E\u0431\u044B\u0447\u043D\u043E\u0433\u043E \u044D\u043A\u0440\u0430\u043D\u0430, \u0430 \u043D\u0435 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u0443\u0435\u0442 \u0441 \u0431\u043E\u043A\u043E\u0432\u043E\u0439 \u0448\u0442\u043E\u0440\u043A\u043E\u0439 Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0421\u0435\u0439\u0447\u0430\u0441 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E", description: savedValue || "Ссылка еще не сохранена" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "URL \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438", description: "\u0412\u0441\u0442\u0430\u0432\u044C \u043F\u043E\u043B\u043D\u0443\u044E \u0441\u0441\u044B\u043B\u043A\u0443 \u043D\u0430 Clash/Mihomo-\u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443 \u0438 \u0437\u0430\u0442\u0435\u043C \u043D\u0430\u0436\u043C\u0438 \u043A\u043D\u043E\u043F\u043A\u0443 \u043D\u0438\u0436\u0435.", value: draft, mustBeURL: true, focusOnMount: true, bShowClearAction: true, bAlwaysShowClearAction: true, disabled: !loaded || busy, onChange: (event) => setDraft(event.currentTarget.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !loaded || busy || !draft.trim(), onClick: () => void saveAndRefresh(), children: "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438 \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => DFL.Navigation.NavigateBack(), children: "\u0412\u0435\u0440\u043D\u0443\u0442\u044C\u0441\u044F \u043D\u0430\u0437\u0430\u0434" }) })] }) }));
 }
 function Content() {
     const [state, setState] = SP_REACT.useState(EMPTY_STATE);
     const [busyAction, setBusyAction] = SP_REACT.useState(null);
-    const [urlDraft, setUrlDraft] = SP_REACT.useState("");
     const [selectedGroup, setSelectedGroup] = SP_REACT.useState("");
     const [selectedProxy, setSelectedProxy] = SP_REACT.useState("");
-    const [draftInitialized, setDraftInitialized] = SP_REACT.useState(false);
-    const applyFreshState = (nextState, syncDraft = false) => {
+    const applyFreshState = (nextState) => {
         setState(nextState);
         setSelectedGroup((current) => {
             const exists = nextState.groups.some((group) => group.name === current);
@@ -224,35 +270,33 @@ function Content() {
             }
             return nextState.active_group || nextState.groups[0]?.name || "";
         });
-        if (syncDraft || !draftInitialized) {
-            setUrlDraft(nextState.subscription_url || "");
-            setDraftInitialized(true);
-        }
     };
-    const refreshUiState = async (syncDraft = false) => {
+    const refreshUiState = async () => {
         const nextState = await getState();
-        applyFreshState(nextState, syncDraft);
+        applyFreshState(nextState);
     };
-    const runAction = async (actionKey, title, action, syncDraft = false) => {
+    const runAction = async (actionKey, title, action) => {
         setBusyAction(actionKey);
         try {
             const nextState = await action();
-            applyFreshState(nextState, syncDraft);
+            applyFreshState(nextState);
             toaster.toast({ title, body: "Готово" });
         }
         catch (error) {
-            const body = error instanceof Error ? error.message : String(error);
-            toaster.toast({ title: "Операция не удалась", body });
-            await refreshUiState(false).catch(() => undefined);
+            toaster.toast({
+                title: "Операция не удалась",
+                body: error instanceof Error ? error.message : String(error),
+            });
+            await refreshUiState().catch(() => undefined);
         }
         finally {
             setBusyAction(null);
         }
     };
     SP_REACT.useEffect(() => {
-        void refreshUiState(true);
+        void refreshUiState();
         const timer = window.setInterval(() => {
-            void refreshUiState(false);
+            void refreshUiState();
         }, 5000);
         return () => window.clearInterval(timer);
     }, []);
@@ -288,34 +332,32 @@ function Content() {
             label: `${proxyName} • ${formatDelay(delay)}${suffix}`,
         };
     });
-    const openSubscriptionModal = () => {
-        let modalHandle;
-        modalHandle = DFL.showModal(SP_JSX.jsx(SubscriptionUrlModal, { initialValue: urlDraft, closeModal: () => modalHandle?.Close(), onSave: (nextValue) => setUrlDraft(nextValue) }), window, {
-            strTitle: "Decky Mihomo",
-            bForcePopOut: true,
-            bHideMainWindowForPopouts: true,
-            popupWidth: 900,
-            popupHeight: 720,
-        });
+    const openSubscriptionEditor = () => {
+        DFL.Navigation.Navigate(EDIT_ROUTE);
+        DFL.Navigation.CloseSideMenus();
     };
     return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSection, { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: heroStyle, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("div", { style: { fontSize: 22, fontWeight: 800, letterSpacing: 0.2 }, children: "Decky Mihomo" }), SP_JSX.jsx("div", { style: heroMetaStyle, children: "\u041F\u043E\u0434\u043F\u0438\u0441\u043A\u0430, \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u043D\u043E\u0434 \u0438 \u043F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043B\u043E\u043A\u0430\u0446\u0438\u0439 \u043F\u0440\u044F\u043C\u043E \u0432 \u0438\u0433\u0440\u043E\u0432\u043E\u043C \u0440\u0435\u0436\u0438\u043C\u0435." })] }), SP_JSX.jsxs("div", { style: statusStyle(state), children: [SP_JSX.jsx(FaTachometerAlt, {}), statusLabel(state)] })] }), SP_JSX.jsxs("div", { style: { display: "flex", flexWrap: "wrap", gap: 18 }, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("div", { style: { ...heroMetaStyle, marginBottom: 4 }, children: "\u0420\u0435\u0436\u0438\u043C \u044F\u0434\u0440\u0430" }), SP_JSX.jsx("div", { children: state.core_mode === "tun"
                                                     ? "TUN VPN"
                                                     : state.controller_ready
                                                         ? "Controller only"
                                                         : "Остановлено" })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("div", { style: { ...heroMetaStyle, marginBottom: 4 }, children: "Mihomo" }), SP_JSX.jsx("div", { children: state.mihomo_version
-                                                    || (state.binary_ready ? "готов к запуску" : "скачается при первом запуске") })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("div", { style: { ...heroMetaStyle, marginBottom: 4 }, children: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435" }), SP_JSX.jsx("div", { children: formatTimestamp(state.last_refreshed_at) })] })] })] }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "\u041F\u043E\u0434\u043F\u0438\u0441\u043A\u0430", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0422\u0435\u043A\u0443\u0449\u0438\u0439 URL \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438", description: urlDraft || "Ссылка еще не добавлена" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null, onClick: openSubscriptionModal, children: [SP_JSX.jsx(FaEdit, { style: { marginRight: 8 } }), "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043E\u043A\u043D\u043E \u0432\u0432\u043E\u0434\u0430 \u0441\u0441\u044B\u043B\u043A\u0438"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !urlDraft.trim(), onClick: () => void runAction("apply-url", "Подписка сохранена и обновлена", () => applySubscriptionUrl(urlDraft.trim()), true), children: "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438 \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !state.subscription_url, onClick: () => void runAction("refresh", "Подписка обновлена", () => refreshSubscription(), true), children: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0443\u044E \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443" }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !state.has_profile, onClick: () => void runAction("connect", "VPN подключен", () => connectVpn()), children: [SP_JSX.jsx(FaPlug, { style: { marginRight: 8 } }), "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C VPN"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !state.connected, onClick: () => void runAction("disconnect", "VPN отключен", () => disconnectVpn()), children: [SP_JSX.jsx(FaPowerOff, { style: { marginRight: 8 } }), "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C VPN"] }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "\u0413\u0440\u0443\u043F\u043F\u044B \u0438 \u043D\u043E\u0434\u044B", children: [state.groups.length > 0 ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "\u0413\u0440\u0443\u043F\u043F\u0430", description: "\u0412\u044B\u0431\u0435\u0440\u0438 \u0433\u0440\u0443\u043F\u043F\u0443 \u043D\u043E\u0434 \u0434\u043B\u044F \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u0438 \u043F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F.", rgOptions: groupOptions, selectedOption: currentGroup?.name || "", onChange: (option) => setSelectedGroup(String(option.data)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "\u041D\u043E\u0434\u0430", description: "\u0421\u043F\u0438\u0441\u043E\u043A \u043D\u043E\u0434 \u0432 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u0435. \u0412 \u043F\u043E\u0434\u043F\u0438\u0441\u0438 \u0432\u0438\u0434\u043D\u0430 \u0437\u0430\u0434\u0435\u0440\u0436\u043A\u0430 \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438.", rgOptions: proxyOptions, selectedOption: selectedProxy, disabled: !currentGroup || proxyOptions.length === 0, onChange: (option) => setSelectedProxy(String(option.data)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !currentGroup, onClick: () => currentGroup
+                                                    || (state.binary_ready ? "готов к запуску" : "скачается при первом запуске") })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("div", { style: { ...heroMetaStyle, marginBottom: 4 }, children: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435" }), SP_JSX.jsx("div", { children: formatTimestamp(state.last_refreshed_at) })] })] })] }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "\u041F\u043E\u0434\u043F\u0438\u0441\u043A\u0430", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0422\u0435\u043A\u0443\u0449\u0438\u0439 URL \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438", description: state.subscription_url || "Ссылка еще не добавлена" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null, onClick: openSubscriptionEditor, children: [SP_JSX.jsx(FaEdit, { style: { marginRight: 8 } }), "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0443\u044E \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0432\u0432\u043E\u0434\u0430"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !state.subscription_url, onClick: () => void runAction("refresh", "Подписка обновлена", () => refreshSubscription()), children: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0443\u044E \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443" }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !state.has_profile, onClick: () => void runAction("connect", "VPN подключен", () => connectVpn()), children: [SP_JSX.jsx(FaPlug, { style: { marginRight: 8 } }), "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C VPN"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !state.connected, onClick: () => void runAction("disconnect", "VPN отключен", () => disconnectVpn()), children: [SP_JSX.jsx(FaPowerOff, { style: { marginRight: 8 } }), "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C VPN"] }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "\u0413\u0440\u0443\u043F\u043F\u044B \u0438 \u043D\u043E\u0434\u044B", children: [state.groups.length > 0 ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "\u0413\u0440\u0443\u043F\u043F\u0430", description: "\u0412\u044B\u0431\u0435\u0440\u0438 \u0433\u0440\u0443\u043F\u043F\u0443 \u043D\u043E\u0434 \u0434\u043B\u044F \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u0438 \u043F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F.", rgOptions: groupOptions, selectedOption: currentGroup?.name || "", onChange: (option) => setSelectedGroup(String(option.data)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "\u041D\u043E\u0434\u0430", description: "\u0421\u043F\u0438\u0441\u043E\u043A \u043D\u043E\u0434 \u0432 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u0435. \u0412 \u043F\u043E\u0434\u043F\u0438\u0441\u0438 \u0432\u0438\u0434\u043D\u0430 \u0437\u0430\u0434\u0435\u0440\u0436\u043A\u0430 \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438.", rgOptions: proxyOptions, selectedOption: selectedProxy, disabled: !currentGroup || proxyOptions.length === 0, onChange: (option) => setSelectedProxy(String(option.data)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !currentGroup, onClick: () => currentGroup
                                         && void runAction("check-group", "Проверка серверов завершена", () => checkGroup(currentGroup.name)), children: [SP_JSX.jsx(FaSyncAlt, { style: { marginRight: 8 } }), "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0441\u0435\u0440\u0432\u0435\u0440\u044B \u0433\u0440\u0443\u043F\u043F\u044B"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !currentGroup, onClick: () => currentGroup
                                         && void runAction("best", "Выбрана лучшая доступная нода", () => chooseBestProxy(currentGroup.name)), children: [SP_JSX.jsx(FaBolt, { style: { marginRight: 8 } }), "\u041D\u0430\u0439\u0442\u0438 \u043B\u0443\u0447\u0448\u0443\u044E \u043D\u043E\u0434\u0443"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busyAction !== null || !currentGroup || !selectedProxy, onClick: () => currentGroup
                                         && selectedProxy
                                         && void runAction("apply-proxy", "Нода выбрана", () => selectProxy(currentGroup.name, selectedProxy)), children: "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u0443\u044E \u043D\u043E\u0434\u0443" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0422\u0435\u043A\u0443\u0449\u0430\u044F \u043D\u043E\u0434\u0430", description: currentGroup?.current || "Еще не выбрана" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u043C\u0430\u044F \u043D\u043E\u0434\u0430", description: recommendedProxy || "Сначала запусти проверку" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0430 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043D\u043E\u0434\u044B", description: formatDelay(currentDelay) }) })] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041D\u043E\u0434\u044B \u0435\u0449\u0435 \u043D\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D\u044B", description: "\u041F\u043E\u0441\u043B\u0435 \u0438\u043C\u043F\u043E\u0440\u0442\u0430 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438 \u0437\u0434\u0435\u0441\u044C \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0433\u0440\u0443\u043F\u043F\u044B \u0438 \u0441\u043F\u0438\u0441\u043E\u043A \u043D\u043E\u0434." }) })), state.last_error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043E\u0448\u0438\u0431\u043A\u0430", description: state.last_error }) }))] })] }));
 }
 var index = definePlugin(() => {
+    routerHook.addRoute(EDIT_ROUTE, SubscriptionEditorPage, {
+        exact: true,
+    });
     return {
         name: "Decky Mihomo",
         titleView: SP_JSX.jsx("div", { className: DFL.staticClasses.Title, children: "Decky Mihomo" }),
         content: SP_JSX.jsx(Content, {}),
         icon: SP_JSX.jsx(FaGlobeEurope, {}),
         onDismount() {
+            routerHook.removeRoute(EDIT_ROUTE);
             console.log("Decky Mihomo unloaded");
         },
     };

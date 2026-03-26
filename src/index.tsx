@@ -1,17 +1,17 @@
 import {
   ButtonItem,
-  ConfirmModal,
   DropdownItem,
   Field,
+  Navigation,
   PanelSection,
   PanelSectionRow,
   TextField,
-  showModal,
   staticClasses,
 } from "@decky/ui";
 import {
   callable,
   definePlugin,
+  routerHook,
   toaster,
 } from "@decky/api";
 import { type CSSProperties, useEffect, useState } from "react";
@@ -51,6 +51,8 @@ type PluginState = {
   has_profile: boolean;
   binary_ready: boolean;
 };
+
+const EDIT_ROUTE = "/decky-mihomo/subscription";
 
 const getState = callable<[], PluginState>("get_state");
 const applySubscriptionUrl = callable<[url: string], PluginState>("apply_subscription_url");
@@ -167,51 +169,118 @@ function formatDelay(delay: number | null | undefined): string {
   return `${delay} мс`;
 }
 
-type SubscriptionUrlModalProps = {
-  initialValue: string;
-  closeModal: () => void;
-  onSave: (nextValue: string) => void;
-};
+function SubscriptionEditorPage() {
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [savedValue, setSavedValue] = useState("");
+  const [loaded, setLoaded] = useState(false);
 
-function SubscriptionUrlModal(props: SubscriptionUrlModalProps) {
-  const [value, setValue] = useState(props.initialValue);
+  useEffect(() => {
+    let cancelled = false;
+
+    void getState()
+      .then((nextState) => {
+        if (cancelled) {
+          return;
+        }
+        setDraft(nextState.subscription_url || "");
+        setSavedValue(nextState.subscription_url || "");
+        setLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        toaster.toast({
+          title: "Не удалось загрузить настройки",
+          body: error instanceof Error ? error.message : String(error),
+        });
+        setLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveAndRefresh = async () => {
+    setBusy(true);
+    try {
+      const nextState = await applySubscriptionUrl(draft.trim());
+      setSavedValue(nextState.subscription_url || draft.trim());
+      toaster.toast({
+        title: "Подписка сохранена",
+        body: "Профиль обновлен, можно возвращаться в плагин.",
+      });
+      Navigation.NavigateBack();
+    } catch (error) {
+      toaster.toast({
+        title: "Не удалось сохранить подписку",
+        body: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <ConfirmModal
-      strTitle="URL подписки"
-      strDescription="Окно ввода открывается отдельным modal, чтобы экранная клавиатура Steam Deck работала корректно и не пряталась под боковой шторкой."
-      strOKButtonText="Готово"
-      strCancelButtonText="Отмена"
-      bAllowFullSize
-      onCancel={props.closeModal}
-      onOK={() => {
-        props.onSave(value.trim());
-        props.closeModal();
-      }}
-    >
-      <TextField
-        label="Clash/Mihomo subscription URL"
-        description="Вставь ссылку полностью. После закрытия модального окна нажми ниже кнопку сохранения и обновления."
-        value={value}
-        mustBeURL
-        focusOnMount
-        bShowClearAction
-        bAlwaysShowClearAction
-        onChange={(event) => setValue(event.currentTarget.value)}
-      />
-    </ConfirmModal>
+    <>
+      <PanelSection title="Редактор подписки">
+        <PanelSectionRow>
+          <Field
+            label="Почему это отдельная страница"
+            description="Так клавиатура Steam Deck открывается поверх обычного экрана, а не конфликтует с боковой шторкой Decky."
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Сейчас сохранено"
+            description={savedValue || "Ссылка еще не сохранена"}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <TextField
+            label="URL подписки"
+            description="Вставь полную ссылку на Clash/Mihomo-подписку и затем нажми кнопку ниже."
+            value={draft}
+            mustBeURL
+            focusOnMount
+            bShowClearAction
+            bAlwaysShowClearAction
+            disabled={!loaded || busy}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={!loaded || busy || !draft.trim()}
+            onClick={() => void saveAndRefresh()}
+          >
+            Сохранить и обновить подписку
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busy}
+            onClick={() => Navigation.NavigateBack()}
+          >
+            Вернуться назад
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+    </>
   );
 }
 
 function Content() {
   const [state, setState] = useState<PluginState>(EMPTY_STATE);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [urlDraft, setUrlDraft] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("");
   const [selectedProxy, setSelectedProxy] = useState("");
-  const [draftInitialized, setDraftInitialized] = useState(false);
 
-  const applyFreshState = (nextState: PluginState, syncDraft = false) => {
+  const applyFreshState = (nextState: PluginState) => {
     setState(nextState);
     setSelectedGroup((current) => {
       const exists = nextState.groups.some((group) => group.name === current);
@@ -220,42 +289,38 @@ function Content() {
       }
       return nextState.active_group || nextState.groups[0]?.name || "";
     });
-
-    if (syncDraft || !draftInitialized) {
-      setUrlDraft(nextState.subscription_url || "");
-      setDraftInitialized(true);
-    }
   };
 
-  const refreshUiState = async (syncDraft = false) => {
+  const refreshUiState = async () => {
     const nextState = await getState();
-    applyFreshState(nextState, syncDraft);
+    applyFreshState(nextState);
   };
 
   const runAction = async (
     actionKey: string,
     title: string,
     action: () => Promise<PluginState>,
-    syncDraft = false,
   ) => {
     setBusyAction(actionKey);
     try {
       const nextState = await action();
-      applyFreshState(nextState, syncDraft);
+      applyFreshState(nextState);
       toaster.toast({ title, body: "Готово" });
     } catch (error) {
-      const body = error instanceof Error ? error.message : String(error);
-      toaster.toast({ title: "Операция не удалась", body });
-      await refreshUiState(false).catch(() => undefined);
+      toaster.toast({
+        title: "Операция не удалась",
+        body: error instanceof Error ? error.message : String(error),
+      });
+      await refreshUiState().catch(() => undefined);
     } finally {
       setBusyAction(null);
     }
   };
 
   useEffect(() => {
-    void refreshUiState(true);
+    void refreshUiState();
     const timer = window.setInterval(() => {
-      void refreshUiState(false);
+      void refreshUiState();
     }, 5000);
     return () => window.clearInterval(timer);
   }, []);
@@ -300,23 +365,9 @@ function Content() {
     };
   });
 
-  const openSubscriptionModal = () => {
-    let modalHandle: { Close: () => void } | undefined;
-    modalHandle = showModal(
-      <SubscriptionUrlModal
-        initialValue={urlDraft}
-        closeModal={() => modalHandle?.Close()}
-        onSave={(nextValue) => setUrlDraft(nextValue)}
-      />,
-      window,
-      {
-        strTitle: "Decky Mihomo",
-        bForcePopOut: true,
-        bHideMainWindowForPopouts: true,
-        popupWidth: 900,
-        popupHeight: 720,
-      },
-    );
+  const openSubscriptionEditor = () => {
+    Navigation.Navigate(EDIT_ROUTE);
+    Navigation.CloseSideMenus();
   };
 
   return (
@@ -370,33 +421,17 @@ function Content() {
         <PanelSectionRow>
           <Field
             label="Текущий URL подписки"
-            description={urlDraft || "Ссылка еще не добавлена"}
+            description={state.subscription_url || "Ссылка еще не добавлена"}
           />
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
             layout="below"
             disabled={busyAction !== null}
-            onClick={openSubscriptionModal}
+            onClick={openSubscriptionEditor}
           >
             <FaEdit style={{ marginRight: 8 }} />
-            Открыть окно ввода ссылки
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={busyAction !== null || !urlDraft.trim()}
-            onClick={() =>
-              void runAction(
-                "apply-url",
-                "Подписка сохранена и обновлена",
-                () => applySubscriptionUrl(urlDraft.trim()),
-                true,
-              )
-            }
-          >
-            Сохранить и обновить подписку
+            Открыть отдельную страницу ввода
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -404,7 +439,7 @@ function Content() {
             layout="below"
             disabled={busyAction !== null || !state.subscription_url}
             onClick={() =>
-              void runAction("refresh", "Подписка обновлена", () => refreshSubscription(), true)
+              void runAction("refresh", "Подписка обновлена", () => refreshSubscription())
             }
           >
             Обновить текущую подписку
@@ -555,12 +590,17 @@ function Content() {
 }
 
 export default definePlugin(() => {
+  routerHook.addRoute(EDIT_ROUTE, SubscriptionEditorPage, {
+    exact: true,
+  });
+
   return {
     name: "Decky Mihomo",
     titleView: <div className={staticClasses.Title}>Decky Mihomo</div>,
     content: <Content />,
     icon: <FaGlobeEurope />,
     onDismount() {
+      routerHook.removeRoute(EDIT_ROUTE);
       console.log("Decky Mihomo unloaded");
     },
   };
